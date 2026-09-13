@@ -1,0 +1,23 @@
+{
+  "name": "Neat Cocktail Machine",
+  "short_name": "Neat",
+  "description": "Control your Neat cocktail machine.",
+  "start_url": "/#/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#111113",
+  "theme_color": "#111113",
+  "icons": [
+    {
+      "src": "/neat-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/neat-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

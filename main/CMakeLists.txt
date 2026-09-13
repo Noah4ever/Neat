@@ -7,6 +7,7 @@ idf_component_register(
 
     PRIV_REQUIRES
         api
+        wifi
         machine
         pump
         io

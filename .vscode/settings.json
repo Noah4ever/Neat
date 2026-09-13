@@ -1,10 +1,12 @@
 {
   "C_Cpp.intelliSenseEngine": "disabled",
   "idf.extensionActivationMode": "always",
+
   "cmake.configureOnOpen": false,
   "cmake.configureOnEdit": false,
   "cmake.automaticReconfigure": false,
   "cmake.autoSelectActiveFolder": false,
+
   "cmake.options.advanced": {
     "build": {
       "statusBarVisibility": "inherit",
@@ -19,21 +21,28 @@
       "inheritDefault": "hidden"
     }
   },
+
   "idf.openOcdConfigs": [
     "board/esp32c6-builtin.cfg"
   ],
-  "idf.port": "/dev/tty.usbmodem1101",
+
+  "idf.port": "/dev/cu.usbmodem1101",
+
   "idf.currentSetup": "/Users/noah/.espressif/v6.1/esp-idf",
+
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32c6",
     "OPENOCD_USB_ADAPTER_LOCATION": "1-1"
   },
+
   "clangd.path": "/Users/noah/.espressif/tools/esp-clangd/esp-21.1.3_20260408/esp-clangd/bin/clangd",
+
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
     "--resource-dir=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/21",
     "--compile-commands-dir=/Users/noah/Workspace/Personal/Neat/build"
   ],
-  "idf.flashType": "JTAG"
+
+  "idf.flashType": "UART"
 }
