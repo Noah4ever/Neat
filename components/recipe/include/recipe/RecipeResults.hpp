@@ -1,0 +1,12 @@
+#pragma once
+
+enum class StartRecipeResult {
+  SUCCESS,
+  RECIPE_NOT_FOUND,
+  INGREDIENT_NOT_AVAILABLE,
+  PUMP_NOT_CALIBRATED,
+  INVALID_OVERRIDE,
+  START_FAILED
+};
+
+enum class StopRecipeResult { SUCCESS, NO_RECIPE_RUNNING };
