@@ -10,9 +10,9 @@ export interface CocktailIngredient {
 export interface Cocktail {
   id: number;
   name: string;
+  imageKey: string | null;
   subtitle: string;
   description: string;
-  image?: string;
   manualItems: string[];
   availableSizes: number[];
   defaultSize: number;

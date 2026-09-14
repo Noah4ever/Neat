@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Martini } from "lucide-react";
+import { cocktailImageFor } from "../data/cocktailImages";
 import type { Cocktail } from "../types/cocktail";
 export function CocktailImage({
   cocktail,
@@ -8,15 +9,16 @@ export function CocktailImage({
   cocktail: Cocktail;
   className?: string;
 }) {
+  const image = cocktailImageFor(cocktail.imageKey);
   const [failed, setFailed] = useState<string | undefined>();
   return (
     <div className={`cocktail-image ${className}`}>
-      {cocktail.image && failed !== cocktail.image ? (
+      {image && failed !== image ? (
         <img
-          src={cocktail.image}
+          src={image}
           alt={cocktail.name}
           draggable={false}
-          onError={() => setFailed(cocktail.image)}
+          onError={() => setFailed(image)}
         />
       ) : (
         <div

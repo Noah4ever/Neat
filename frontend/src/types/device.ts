@@ -9,6 +9,7 @@ export interface RecipeItem {
 export interface RecipeRecord {
   id: number;
   name: string;
+  imageKey: string | null;
   items: RecipeItem[];
 }
 export interface PumpConfig {
@@ -35,4 +36,12 @@ export interface OperationStatus {
   progress: number;
   label?: string;
   recipeId?: number;
+}
+export interface DeviceSettings {
+  activateLedWhenPumpActive: boolean;
+}
+export interface BottleState {
+  pumpId: number;
+  capacityMl: number;
+  remainingMl: number;
 }

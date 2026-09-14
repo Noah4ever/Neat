@@ -59,7 +59,21 @@ function App() {
           </div>
         </DrinkSessionProvider>
       </HashRouter>
-      <Toaster position="bottom-center" richColors theme="dark" />
+      <Toaster
+        position="bottom-center"
+        theme="dark"
+        toastOptions={{
+          classNames: {
+            toast: "neat-toast",
+            title: "neat-toast__title",
+            description: "neat-toast__description",
+            actionButton: "neat-toast__action",
+            error: "neat-toast--error",
+            warning: "neat-toast--warning",
+            success: "neat-toast--success",
+          },
+        }}
+      />
     </>
   );
 }

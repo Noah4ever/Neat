@@ -1,14 +1,19 @@
+import { messageForError } from "../services/errors";
+
 export function QueryMessage({
   query,
 }: {
   query: { isPending: boolean; error: Error | null; refetch: () => unknown };
 }) {
+  const errorMessage = query.error ? messageForError(query.error) : null;
   return (
     <div className="empty-state" role="status">
       <p>
         {query.isPending
           ? "Loading…"
-          : query.error?.message || "Nothing here yet."}
+          : errorMessage
+            ? `${errorMessage.title}. ${errorMessage.message}`
+            : "Nothing here yet."}
       </p>
       {query.error && (
         <button

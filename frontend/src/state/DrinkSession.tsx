@@ -9,10 +9,12 @@ import {
   getStatus,
   makeDrink,
   stopOperation,
-  USE_MOCK_API,
 } from "../services/api";
 import type { MakeDrinkRequest } from "../services/api";
 import type { Cocktail } from "../types/cocktail";
+import { ApiError } from "../services/errors";
+import { showApiError, showMachineEvent } from "../services/notifications";
+import { createMachineWebSocket } from "../services/websocket";
 
 export function DrinkSessionProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<DrinkSession | null>(null);
@@ -25,8 +27,21 @@ export function DrinkSessionProvider({ children }: { children: ReactNode }) {
   const { data: status } = useQuery({
     queryKey: ["status"],
     queryFn: getStatus,
-    refetchInterval: USE_MOCK_API ? 500 : 1000,
+    refetchInterval: 1000,
   });
+
+  useEffect(
+    () =>
+      createMachineWebSocket((event) => {
+        if (event.type === "machine_error" || event.type === "machine_warning")
+          showMachineEvent(event);
+        if (event.type === "machine_error")
+          void client.invalidateQueries({ queryKey: ["status"] });
+        if (event.type === "machine_warning")
+          void client.invalidateQueries({ queryKey: ["bottles"] });
+      }),
+    [client],
+  );
 
   useEffect(() => {
     if (!session) return;
@@ -53,7 +68,7 @@ export function DrinkSessionProvider({ children }: { children: ReactNode }) {
 
   async function start(cocktail: Cocktail, request: MakeDrinkRequest) {
     if (lock.current || status?.state === "running")
-      throw new Error("The machine is busy. You can keep browsing.");
+      throw new ApiError(409, "machine_busy");
     lock.current = true;
     setStarting(true);
     try {
@@ -82,11 +97,7 @@ export function DrinkSessionProvider({ children }: { children: ReactNode }) {
       lock.current = false;
       if (location.pathname === "/progress") navigate("/", { replace: true });
     } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Could not stop the operation.",
-      );
+      showApiError(error);
     } finally {
       setStopping(false);
     }

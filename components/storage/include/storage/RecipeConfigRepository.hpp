@@ -15,7 +15,8 @@ public:
     std::optional<RecipeConfig> findById(std::uint16_t id);
     std::optional<RecipeConfig> create(
         const std::string& name,
-        const std::vector<RecipeItem>& items);
+        const std::vector<RecipeItem>& items,
+        std::optional<std::string> imageKey = std::nullopt);
     bool update(const RecipeConfig& config);
     bool remove(std::uint16_t id);
 

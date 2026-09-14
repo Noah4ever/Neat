@@ -124,8 +124,7 @@ esp_err_t WiFiController::connect(const std::string &ssid,
 
   // Changing the STA configuration while connected requires a reconnect.
   esp_wifi_disconnect();
-  result = esp_wifi_connect();
-  return result == ESP_ERR_WIFI_NOT_STARTED ? result : ESP_OK;
+  return esp_wifi_connect();
 }
 
 bool WiFiController::isScanInProgress() const { return scanInProgress_.load(); }

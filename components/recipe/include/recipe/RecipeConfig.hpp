@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -12,5 +13,6 @@ struct RecipeItem {
 struct RecipeConfig {
   std::uint16_t id;
   std::string name;
+  std::optional<std::string> imageKey;
   std::vector<RecipeItem> items;
 };

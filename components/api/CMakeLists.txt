@@ -7,8 +7,12 @@ idf_component_register(
       pump
       wifi
       storage
+      bottle
+      settings
     PRIV_REQUIRES
       espressif__cjson
+      esp_app_format
+      esp_netif
       spiffs
 )
 

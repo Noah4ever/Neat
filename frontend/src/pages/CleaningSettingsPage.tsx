@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
 import { PageHeading } from "../components/SettingsPrimitives";
 import { ProgressMeter } from "../components/ProgressMeter";
 import { getPumps, startCleaning } from "../services/api";
+import { showApiError } from "../services/notifications";
 import { useDrinkSession } from "../state/useDrinkSession";
 export function CleaningSettingsPage() {
   const [pump, setPump] = useState("all");
@@ -13,7 +13,7 @@ export function CleaningSettingsPage() {
   const start = useMutation({
     mutationFn: () => startCleaning(pump === "all" ? undefined : Number(pump)),
     onSuccess: () => cache.invalidateQueries({ queryKey: ["status"] }),
-    onError: (error) => toast.error(error.message),
+    onError: showApiError,
   });
   const running = status?.kind === "cleaning" && status.state === "running";
   return (

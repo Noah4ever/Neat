@@ -11,6 +11,7 @@ import {
   getIngredients,
   saveIngredient,
 } from "../services/api";
+import { showApiError } from "../services/notifications";
 import type { Ingredient } from "../types/device";
 
 export function IngredientsPage() {
@@ -38,7 +39,7 @@ export function IngredientsPage() {
       setConfirmDelete(false);
       toast.success("Ingredients updated");
     },
-    onError: (error) => toast.error(error.message),
+    onError: showApiError,
   });
   return (
     <div className="settings-page">

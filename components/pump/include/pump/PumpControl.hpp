@@ -44,6 +44,8 @@ public:
 
   PumpResult stopPump(std::uint8_t pumpId);
   void stopAllPumps();
+  bool isPumpRunning(std::uint8_t pumpId) const;
+  std::vector<std::uint8_t> pumpIds() const;
 
 private:
   std::vector<Pump> pumps_;

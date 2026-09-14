@@ -12,12 +12,14 @@ import {
   getRecipe,
   recipeItems,
   saveRecipe,
-  USE_MOCK_API,
 } from "../services/api";
 import type { Cocktail } from "../types/cocktail";
+import { cocktailImages } from "../data/cocktailImages";
+import { showApiError } from "../services/notifications";
 const blank: Cocktail = {
   id: 0,
   name: "",
+  imageKey: null,
   subtitle: "",
   description: "",
   ingredients: [],
@@ -64,7 +66,7 @@ function RecipeEditor({ initial }: { initial: Cocktail }) {
       navigate("/settings/recipes");
       toast.success("Recipes updated");
     },
-    onError: (error) => toast.error(error.message),
+    onError: showApiError,
   });
   const available =
     ingredients.data?.filter(
@@ -101,30 +103,25 @@ function RecipeEditor({ initial }: { initial: Cocktail }) {
       <div className="edit-recipe-grid">
         <div>
           <CocktailImage cocktail={recipe} className="editor-image" />
-          {USE_MOCK_API && (
-            <label className="image-picker">
-              Change image
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (!file) return;
-                  if (file.size > 2_000_000) {
-                    toast.error("Choose an image smaller than 2 MB.");
-                    return;
-                  }
-                  const reader = new FileReader();
-                  reader.onload = () =>
-                    setRecipe((current) => ({
-                      ...current,
-                      image: String(reader.result),
-                    }));
-                  reader.readAsDataURL(file);
-                }}
-              />
-            </label>
-          )}
+          <label className="image-picker">
+            Image
+            <select
+              value={recipe.imageKey ?? ""}
+              onChange={(event) =>
+                setRecipe({
+                  ...recipe,
+                  imageKey: event.target.value || null,
+                })
+              }
+            >
+              <option value="">Neat placeholder</option>
+              {Object.keys(cocktailImages).map((imageKey) => (
+                <option key={imageKey} value={imageKey}>
+                  {imageKey}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
         <div className="form-fields">
           <label>
@@ -138,35 +135,6 @@ function RecipeEditor({ initial }: { initial: Cocktail }) {
               }
             />
           </label>
-          {USE_MOCK_API && (
-            <>
-              <label>
-                Description
-                <textarea
-                  rows={3}
-                  value={recipe.description}
-                  onChange={(event) =>
-                    setRecipe({ ...recipe, description: event.target.value })
-                  }
-                />
-              </label>
-              <label>
-                Before mixing
-                <input
-                  value={recipe.manualItems.join(", ")}
-                  onChange={(event) =>
-                    setRecipe({
-                      ...recipe,
-                      manualItems: event.target.value
-                        .split(",")
-                        .map((item) => item.trimStart()),
-                    })
-                  }
-                />
-                <small>Separate items with commas.</small>
-              </label>
-            </>
-          )}
         </div>
       </div>
       <h2>Ingredients</h2>
@@ -178,31 +146,6 @@ function RecipeEditor({ initial }: { initial: Cocktail }) {
           <div className="ingredient-editor-row" key={item.id}>
             <div className="ingredient-editor-name">
               <strong>{item.name}</strong>
-              {USE_MOCK_API && (
-                <select
-                  aria-label={`${item.name} type`}
-                  value={item.category}
-                  onChange={(event) =>
-                    setRecipe({
-                      ...recipe,
-                      ingredients: recipe.ingredients.map((value) =>
-                        value.id === item.id
-                          ? {
-                              ...value,
-                              category: event.target
-                                .value as typeof item.category,
-                            }
-                          : value,
-                      ),
-                    })
-                  }
-                >
-                  <option>Alcohol</option>
-                  <option>Juice</option>
-                  <option>Mixer</option>
-                  <option>Syrup</option>
-                </select>
-              )}
             </div>
             <label className="amount-field">
               <span className="sr-only">{item.name} amount in ml</span>

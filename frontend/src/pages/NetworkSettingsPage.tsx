@@ -10,6 +10,7 @@ import {
 } from "../components/SettingsPrimitives";
 import { QueryMessage } from "../components/QueryMessage";
 import { connectNetwork, getNetwork, scanNetworks } from "../services/api";
+import { showApiError } from "../services/notifications";
 export function NetworkSettingsPage() {
   const query = useQuery({
     queryKey: ["network"],
@@ -25,7 +26,7 @@ export function NetworkSettingsPage() {
   const scan = useMutation({
     mutationFn: scanNetworks,
     onSuccess: () => cache.invalidateQueries({ queryKey: ["network"] }),
-    onError: (error) => toast.error(error.message),
+    onError: showApiError,
   });
   const connect = useMutation({
     mutationFn: () => connectNetwork(selected!.ssid, password),
@@ -35,7 +36,7 @@ export function NetworkSettingsPage() {
       setPassword("");
       toast.success("Connection requested");
     },
-    onError: (error) => toast.error(error.message),
+    onError: showApiError,
   });
   return (
     <div className="settings-page">
@@ -44,6 +45,7 @@ export function NetworkSettingsPage() {
         <QueryMessage query={query} />
       ) : (
         <>
+          <h2 className="settings-section-label">Wi-Fi</h2>
           <SettingsGroup>
             <SettingsRow
               icon={Wifi}
@@ -60,7 +62,10 @@ export function NetworkSettingsPage() {
             />
           </SettingsGroup>
           <div className="section-heading">
-            <h2>Available networks</h2>
+            <div>
+              <h2>Available networks</h2>
+              <p className="muted">Choose a network for Neat.</p>
+            </div>
             <button
               className="secondary-button"
               disabled={scan.isPending}
@@ -69,7 +74,7 @@ export function NetworkSettingsPage() {
               {scan.isPending ? "Scanning…" : "Scan networks"}
             </button>
           </div>
-          <div className="management-list">
+          <div className="management-list network-list">
             {query.data.networks.map((item) => (
               <button
                 key={item.ssid}

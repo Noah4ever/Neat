@@ -189,6 +189,22 @@ void PumpControl::stopAllPumps() {
   }
 }
 
+bool PumpControl::isPumpRunning(std::uint8_t pumpId) const {
+  const auto pump = std::find_if(
+      pumps_.begin(), pumps_.end(),
+      [pumpId](const Pump &candidate) { return candidate.id() == pumpId; });
+  return pump != pumps_.end() && pump->isRunning();
+}
+
+std::vector<std::uint8_t> PumpControl::pumpIds() const {
+  std::vector<std::uint8_t> ids;
+  ids.reserve(pumps_.size());
+  for (const Pump &pump : pumps_) {
+    ids.push_back(pump.id());
+  }
+  return ids;
+}
+
 Pump PumpControl::createPump(const PumpConfig &config) {
   std::unique_ptr<OutputChannel> output;
 

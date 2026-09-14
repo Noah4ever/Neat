@@ -13,10 +13,10 @@ export const mockCocktails: Cocktail[] = [
   {
     id: 1,
     name: "Mojito",
+    imageKey: "mojito",
     subtitle: "Fresh. Crisp. Timeless.",
     description:
       "White rum, fresh lime and mint finished with a bright splash of soda.",
-    image: "/drinks/mojito.webp",
     manualItems: ["Ice cubes", "Lime wedges", "Mint leaves"],
     availableSizes: sizes,
     defaultSize: 400,
@@ -31,9 +31,9 @@ export const mockCocktails: Cocktail[] = [
   {
     id: 2,
     name: "Whiskey Sour",
+    imageKey: "whiskey-sour",
     subtitle: "Whiskey & lemon. No egg white.",
     description: "Whiskey, fresh lemon and a little sweetness. No egg white.",
-    image: "/drinks/whiskey-sour.webp",
     manualItems: ["Ice cubes", "Orange peel", "Cherry"],
     availableSizes: sizes,
     defaultSize: 300,
@@ -47,10 +47,10 @@ export const mockCocktails: Cocktail[] = [
   {
     id: 3,
     name: "Caipirinha",
+    imageKey: "caipirinha",
     subtitle: "Brazilian. Zesty. Vibrant.",
     description:
       "A lively mix of cachaça and fresh lime with a clean, punchy finish.",
-    image: "/drinks/caipirinha.webp",
     manualItems: ["Crushed ice", "Lime wedges"],
     availableSizes: sizes,
     defaultSize: 300,
@@ -64,10 +64,10 @@ export const mockCocktails: Cocktail[] = [
   {
     id: 4,
     name: "Sex on the Beach",
+    imageKey: "sex-on-the-beach",
     subtitle: "Fruity. Fun. Iconic.",
     description:
       "A bright, fruit-forward combination with peach, orange and cranberry.",
-    image: "/drinks/sex-on-the-beach.webp",
     manualItems: ["Ice cubes", "Orange slice"],
     availableSizes: sizes,
     defaultSize: 400,
@@ -82,10 +82,10 @@ export const mockCocktails: Cocktail[] = [
   {
     id: 5,
     name: "Long Island Iced Tea",
+    imageKey: "long-island",
     subtitle: "Strong. Bold. Legendary.",
     description:
       "A full-flavored classic with citrus, cola and a confident spirit blend.",
-    image: "/drinks/long-island.webp",
     manualItems: ["Ice cubes", "Lemon wedge"],
     availableSizes: sizes,
     defaultSize: 400,
@@ -104,10 +104,10 @@ export const mockCocktails: Cocktail[] = [
   {
     id: 6,
     name: "Gin Tonic",
+    imageKey: "gin-tonic",
     subtitle: "Crisp. Refreshing. Modern.",
     description:
       "A clean and refreshing highball with botanical gin and sparkling tonic.",
-    image: "/drinks/gin-tonic.webp",
     manualItems: ["Ice cubes", "Lime wheel"],
     availableSizes: sizes,
     defaultSize: 400,
@@ -120,10 +120,10 @@ export const mockCocktails: Cocktail[] = [
   {
     id: 7,
     name: "Margarita",
+    imageKey: "margarita",
     subtitle: "Zesty. Smooth. Classic.",
     description:
       "Tequila and orange meet fresh lime in a sharp, balanced favorite.",
-    image: "/drinks/margarita.webp",
     manualItems: ["Salt rim", "Ice cubes", "Lime wheel"],
     availableSizes: sizes,
     defaultSize: 300,
@@ -137,10 +137,10 @@ export const mockCocktails: Cocktail[] = [
   {
     id: 8,
     name: "Piña Colada",
+    imageKey: "pina-colada",
     subtitle: "Tropical. Creamy. Dreamy.",
     description:
       "Creamy coconut, pineapple and rum blended into a smooth tropical escape.",
-    image: "/drinks/pina-colada.webp",
     manualItems: ["Ice cubes", "Pineapple slice"],
     availableSizes: sizes,
     defaultSize: 400,
@@ -154,7 +154,7 @@ export const mockCocktails: Cocktail[] = [
   {
     id: 9,
     name: "Negroni",
-    image: "/drinks/negroni.webp",
+    imageKey: "negroni",
     subtitle: "Bitter. Balanced. Refined.",
     description:
       "Equal parts bitter, sweet and botanical for a rich, sophisticated sip.",
@@ -174,9 +174,9 @@ mockCocktails.push(
   {
     id: 10,
     name: "Moscow Mule",
+    imageKey: "moscow-mule",
     subtitle: "Ginger. Lime. A little kick.",
     description: "Vodka, bright lime and spicy ginger beer, served ice cold.",
-    image: "/drinks/moscow-mule.webp",
     manualItems: ["Ice cubes", "Lime wedge"],
     availableSizes: sizes,
     defaultSize: 400,
@@ -190,10 +190,10 @@ mockCocktails.push(
   {
     id: 11,
     name: "Erdbeer Mojito",
+    imageKey: "strawberry-mojito",
     subtitle: "Strawberry. Lime. Fresh mint.",
     description:
       "White rum, strawberries and lime with fresh mint and a splash of soda.",
-    image: "/drinks/strawberry-mojito.webp",
     manualItems: ["Ice cubes", "Mint leaves", "Strawberries"],
     availableSizes: sizes,
     defaultSize: 400,

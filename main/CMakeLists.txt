@@ -11,5 +11,10 @@ idf_component_register(
         machine
         pump
         io
+        sensor
+        feedback
         storage
+        settings
+        bottle
+        nvs_flash
 )

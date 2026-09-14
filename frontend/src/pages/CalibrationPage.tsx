@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { PageHeading } from "../components/SettingsPrimitives";
 import { ProgressMeter } from "../components/ProgressMeter";
 import { finishCalibration, getPumps, startCalibration } from "../services/api";
+import { showApiError } from "../services/notifications";
 import { useDrinkSession } from "../state/useDrinkSession";
 export function CalibrationPage() {
   const [pump, setPump] = useState("");
@@ -19,7 +20,7 @@ export function CalibrationPage() {
   const start = useMutation({
     mutationFn: () => startCalibration(Number(pump), duration * 1000),
     onSuccess: refresh,
-    onError: (error) => toast.error(error.message),
+    onError: showApiError,
   });
   const finish = useMutation({
     mutationFn: () => finishCalibration(Number(volume)),
@@ -28,7 +29,7 @@ export function CalibrationPage() {
       setVolume("");
       toast.success("Calibration saved");
     },
-    onError: (error) => toast.error(error.message),
+    onError: showApiError,
   });
   const running = status?.kind === "calibration" && status.state === "running";
   const measured =

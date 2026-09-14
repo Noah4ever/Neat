@@ -59,7 +59,8 @@ std::optional<RecipeConfig> RecipeConfigRepository::findById(std::uint16_t id)
 
 std::optional<RecipeConfig> RecipeConfigRepository::create(
     const std::string& name,
-    const std::vector<RecipeItem>& items)
+    const std::vector<RecipeItem>& items,
+    std::optional<std::string> imageKey)
 {
     std::vector<RecipeConfig> configs;
     if (!readAll(configs)) {
@@ -71,7 +72,12 @@ std::optional<RecipeConfig> RecipeConfigRepository::create(
         return std::nullopt;
     }
 
-    RecipeConfig config{.id = id, .name = name, .items = items};
+    RecipeConfig config{
+        .id = id,
+        .name = name,
+        .imageKey = std::move(imageKey),
+        .items = items,
+    };
     configs.push_back(config);
     if (!saveAll(configs)) {
         return std::nullopt;
@@ -178,8 +184,26 @@ bool RecipeConfigRepository::serialize(
 
         if (!itemsValid
             || cJSON_AddNumberToObject(item, "id", config.id) == nullptr
-            || cJSON_AddStringToObject(item, "name", config.name.c_str()) == nullptr
-            || !cJSON_AddItemToObject(item, "items", items)) {
+            || cJSON_AddStringToObject(item, "name", config.name.c_str()) == nullptr) {
+            cJSON_Delete(item);
+            cJSON_Delete(items);
+            return false;
+        }
+
+        if (config.imageKey.has_value()) {
+            if (cJSON_AddStringToObject(
+                    item, "imageKey", config.imageKey->c_str()) == nullptr) {
+                cJSON_Delete(item);
+                cJSON_Delete(items);
+                return false;
+            }
+        } else if (cJSON_AddNullToObject(item, "imageKey") == nullptr) {
+            cJSON_Delete(item);
+            cJSON_Delete(items);
+            return false;
+        }
+
+        if (!cJSON_AddItemToObject(item, "items", items)) {
             cJSON_Delete(item);
             cJSON_Delete(items);
             return false;
@@ -219,12 +243,23 @@ bool RecipeConfigRepository::deserialize(
         const cJSON* name = cJSON_IsObject(item)
             ? cJSON_GetObjectItemCaseSensitive(item, "name")
             : nullptr;
+        const cJSON* imageKey = cJSON_IsObject(item)
+            ? cJSON_GetObjectItemCaseSensitive(item, "imageKey")
+            : nullptr;
         const cJSON* items = cJSON_IsObject(item)
             ? cJSON_GetObjectItemCaseSensitive(item, "items")
             : nullptr;
         if (!isUint16(id) || !cJSON_IsString(name) || name->valuestring == nullptr
             || !cJSON_IsArray(items)) {
             return false;
+        }
+
+        std::optional<std::string> parsedImageKey;
+        if (imageKey != nullptr && !cJSON_IsNull(imageKey)) {
+            if (!cJSON_IsString(imageKey) || imageKey->valuestring == nullptr) {
+                return false;
+            }
+            parsedImageKey = imageKey->valuestring;
         }
 
         const std::uint16_t recipeId = static_cast<std::uint16_t>(id->valuedouble);
@@ -258,6 +293,7 @@ bool RecipeConfigRepository::deserialize(
         parsed.push_back({
             .id = recipeId,
             .name = name->valuestring,
+            .imageKey = std::move(parsedImageKey),
             .items = std::move(parsedItems),
         });
     }

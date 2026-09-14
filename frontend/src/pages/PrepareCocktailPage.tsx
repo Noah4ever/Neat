@@ -3,13 +3,13 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Play } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
-import { toast } from "sonner";
 import { CocktailImage } from "../components/CocktailImage";
 import { SegmentedOptionGroup } from "../components/SegmentedOptionGroup";
 import { useDrinkSession } from "../state/useDrinkSession";
 import { drinkOverrides, getRecipe } from "../services/api";
 import type { Cocktail, DrinkStrength } from "../types/cocktail";
 import { QueryMessage } from "../components/QueryMessage";
+import { showApiErrorWithRetry } from "../services/notifications";
 
 export function PrepareCocktailPage() {
   const { id } = useParams();
@@ -34,7 +34,7 @@ function Preparation({ cocktail }: { cocktail: Cocktail }) {
         overrides: drinkOverrides(cocktail, size, strength),
       }),
     onSuccess: () => navigate("/progress"),
-    onError: (error) => toast.error(error.message),
+    onError: (error) => showApiErrorWithRetry(error, () => mutation.mutate()),
   });
   return (
     <main className="prepare-layout">
@@ -49,7 +49,8 @@ function Preparation({ cocktail }: { cocktail: Cocktail }) {
           <p>{cocktail.description || "Made fresh, just for you."}</p>
         </div>
         <div className="control-block">
-          <h2>Size</h2>
+          <span className="control-step">1</span>
+          <h2>Drink size</h2>
           <SegmentedOptionGroup
             label="Drink size"
             value={size}
@@ -62,7 +63,8 @@ function Preparation({ cocktail }: { cocktail: Cocktail }) {
         </div>
         {cocktail.ingredients.some((item) => item.category === "Alcohol") && (
           <div className="control-block">
-            <h2>Strength</h2>
+            <span className="control-step">2</span>
+            <h2>Alcohol strength</h2>
             <SegmentedOptionGroup
               label="Alcohol strength"
               value={strength}
@@ -75,6 +77,17 @@ function Preparation({ cocktail }: { cocktail: Cocktail }) {
             />
           </div>
         )}
+        <div className="ingredients-preview">
+          <h2>In your drink</h2>
+          <div>
+            {cocktail.ingredients.map((ingredient) => (
+              <span key={ingredient.id}>
+                <strong>{ingredient.name}</strong>
+                <small>{ingredient.amount}</small>
+              </span>
+            ))}
+          </div>
+        </div>
         <div className="before-mixing">
           <h2>Before you start</h2>
           <p>

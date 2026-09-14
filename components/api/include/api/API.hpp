@@ -1,7 +1,10 @@
 #pragma once
 
+#include <cstdint>
+#include <optional>
 #include <string>
 
+#include "bottle/BottleStateRepository.hpp"
 #include "esp_err.h"
 #include "esp_http_server.h"
 #include "machine/MachineLogic.hpp"
@@ -15,10 +18,10 @@
 class API {
 public:
   API(MachineLogic &machineLogic, PumpControl &pumpControl,
-      WiFiController &wifiController,
-      RecipeConfigRepository &recipeRepository,
+      WiFiController &wifiController, RecipeConfigRepository &recipeRepository,
       IngredientConfigRepository &ingredientRepository,
-      PumpConfigRepository &pumpRepository);
+      PumpConfigRepository &pumpRepository,
+      BottleStateRepository &bottleStateRepository);
   esp_err_t start();
   void stop();
 
@@ -31,6 +34,7 @@ private:
   RecipeConfigRepository &recipeRepository_;
   IngredientConfigRepository &ingredientRepository_;
   PumpConfigRepository &pumpRepository_;
+  BottleStateRepository &bottleStateRepository_;
 
   httpd_handle_t server_ = nullptr;
   bool webFileSystemMounted_ = false;
@@ -75,7 +79,12 @@ private:
   esp_err_t handleDevice(httpd_req_t *req);
   static void restartDeviceWork(void *arg);
 
-  static esp_err_t networkScanHandler(httpd_req_t *req);
+  static esp_err_t deviceSettingsHandler(httpd_req_t *req);
+  esp_err_t handleDeviceSettings(httpd_req_t *req);
+
+  static esp_err_t bottlesHandler(httpd_req_t *req);
+  esp_err_t handleBottles(httpd_req_t *req);
+
   esp_err_t handleNetworkScan(httpd_req_t *req);
 
   static esp_err_t staticFileHandler(httpd_req_t *req);
@@ -83,15 +92,6 @@ private:
   esp_err_t sendFile(httpd_req_t *req, const std::string &path);
 
   void handleWiFiScanFinished(const std::vector<WiFiNetwork> &networks);
-
-  enum class OperationKind { NONE, DRINK, CLEANING, CALIBRATION };
-  enum class OperationState { IDLE, RUNNING, FINISHED, STOPPED };
-
-  OperationKind operationKind_ = OperationKind::NONE;
-  OperationState operationState_ = OperationState::IDLE;
-  std::int64_t operationStartedAtUs_ = 0;
-  std::uint64_t operationDurationMs_ = 0;
-  std::uint16_t operationRecipeId_ = 0;
-  std::uint8_t calibrationPumpId_ = 0;
-  std::string operationLabel_;
+  void handleMachineEvent(MachineEvent event,
+                          std::optional<std::uint8_t> pumpId);
 };
