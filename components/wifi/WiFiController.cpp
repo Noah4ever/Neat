@@ -122,9 +122,43 @@ esp_err_t WiFiController::connect(const std::string &ssid,
     return result;
   }
 
+  reconnectEnabled_ = true;
   // Changing the STA configuration while connected requires a reconnect.
   esp_wifi_disconnect();
   return esp_wifi_connect();
+}
+
+esp_err_t WiFiController::disconnect() {
+  reconnectEnabled_ = false;
+  stationConnected_ = false;
+  const esp_err_t result = esp_wifi_disconnect();
+  return result == ESP_ERR_WIFI_NOT_CONNECT ? ESP_OK : result;
+}
+
+esp_err_t WiFiController::reconnect() {
+  wifi_config_t config = {};
+  if (esp_wifi_get_config(WIFI_IF_STA, &config) != ESP_OK ||
+      config.sta.ssid[0] == '\0') {
+    return ESP_ERR_INVALID_STATE;
+  }
+  reconnectEnabled_ = true;
+  return esp_wifi_connect();
+}
+
+esp_err_t WiFiController::forgetNetwork() {
+  reconnectEnabled_ = false;
+  wifi_config_t emptyConfig = {};
+  const esp_err_t configResult =
+      esp_wifi_set_config(WIFI_IF_STA, &emptyConfig);
+  if (configResult != ESP_OK) {
+    return configResult;
+  }
+
+  stationConnected_ = false;
+  const esp_err_t disconnectResult = esp_wifi_disconnect();
+  return disconnectResult == ESP_ERR_WIFI_NOT_CONNECT
+             ? ESP_OK
+             : disconnectResult;
 }
 
 bool WiFiController::isScanInProgress() const { return scanInProgress_.load(); }
@@ -142,6 +176,10 @@ std::string WiFiController::getStationSsid() const {
 }
 
 std::string WiFiController::getAccessPointSsid() const { return apSsid_; }
+
+std::string WiFiController::getAccessPointPassword() const {
+  return apPassword_;
+}
 
 const std::vector<WiFiNetwork> &WiFiController::getScanResults() const {
   return scanResults_;
@@ -241,7 +279,9 @@ void WiFiController::handleEvent(esp_event_base_t eventBase, int32_t eventId,
 
   if (eventBase == WIFI_EVENT) {
     if (eventId == WIFI_EVENT_STA_START) {
-      connectSavedNetwork();
+      if (reconnectEnabled_) {
+        connectSavedNetwork();
+      }
     }
 
     if (eventId == WIFI_EVENT_STA_DISCONNECTED) {

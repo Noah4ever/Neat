@@ -21,11 +21,15 @@ public:
 
   esp_err_t startScan();
   esp_err_t connect(const std::string &ssid, const std::string &password);
+  esp_err_t disconnect();
+  esp_err_t reconnect();
+  esp_err_t forgetNetwork();
 
   bool isScanInProgress() const;
   bool isStationConnected() const;
   std::string getStationSsid() const;
   std::string getAccessPointSsid() const;
+  std::string getAccessPointPassword() const;
 
   const std::vector<WiFiNetwork> &getScanResults() const;
 
@@ -37,6 +41,7 @@ private:
 
   std::atomic<bool> stationConnected_{false};
   std::atomic<bool> scanInProgress_{false};
+  std::atomic<bool> reconnectEnabled_{true};
 
   std::vector<WiFiNetwork> scanResults_;
 

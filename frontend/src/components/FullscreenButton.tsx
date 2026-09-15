@@ -28,9 +28,14 @@ export function FullscreenButton() {
   }
   return (
     <div className="fullscreen-control">
-      <button className="secondary-button" onClick={toggle} type="button">
+      <button
+        className="icon-button"
+        aria-label={active ? "Exit full screen" : "Enter full screen"}
+        title={active ? "Exit full screen" : "Enter full screen"}
+        onClick={toggle}
+        type="button"
+      >
         {active ? <Minimize /> : <Maximize />}
-        {active ? "Exit full screen" : "Enter full screen"}
       </button>
       {message && <p role="status">{message}</p>}
     </div>

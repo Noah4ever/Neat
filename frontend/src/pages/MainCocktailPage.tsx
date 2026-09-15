@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { QueryMessage } from "../components/QueryMessage";
 import { CocktailGrid } from "../components/CocktailGrid";
+import { PageInfoButton } from "../components/PageInfoButton";
 import { getRecipes } from "../services/api";
 import type { Cocktail } from "../types/cocktail";
 
@@ -15,7 +16,9 @@ export function MainCocktailPage({ search }: { search: string }) {
     queryKey: ["recipes"],
     queryFn: getRecipes,
   });
-  const cocktails = recipesQuery.data ?? emptyCocktails;
+  const cocktails = (recipesQuery.data ?? emptyCocktails).filter(
+    (recipe) => recipe.availability.available,
+  );
 
   const filteredCocktails = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -32,7 +35,10 @@ export function MainCocktailPage({ search }: { search: string }) {
         <div className="dashboard-heading">
           <div>
             <span>Drink library</span>
-            <h1>Choose your cocktail</h1>
+            <div className="page-title-with-info">
+              <h1>Choose your cocktail</h1>
+              <PageInfoButton />
+            </div>
           </div>
           <strong>{filteredCocktails.length} drinks available</strong>
         </div>

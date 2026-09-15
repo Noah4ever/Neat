@@ -6,6 +6,10 @@ function displayApiError(error: unknown, retry?: () => void) {
   const notice = messageForError(error);
   toast.error(notice.title, {
     description: notice.message,
+    className:
+      error instanceof ApiError && error.key === "no_glass"
+        ? "neat-toast--compact"
+        : undefined,
     action:
       error instanceof ApiError && error.key === "no_glass" && retry
         ? { label: "Try again", onClick: retry }

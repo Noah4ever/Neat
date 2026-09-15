@@ -32,6 +32,7 @@ void FeedbackControl::update() {
 }
 
 void FeedbackControl::setPumpLed(std::uint8_t pumpId, bool state) {
+  if (testLedOverrideActive_) return;
   for (PumpLedMapping &mapping : pumpLedMappings_) {
     if (mapping.pumpId == pumpId) {
       mapping.led.setState(state);
@@ -41,9 +42,29 @@ void FeedbackControl::setPumpLed(std::uint8_t pumpId, bool state) {
 }
 
 void FeedbackControl::turnOffAllPumpLeds() {
+  if (testLedOverrideActive_) return;
   for (PumpLedMapping &mapping : pumpLedMappings_) {
     mapping.led.off();
   }
+}
+
+bool FeedbackControl::setTestPumpLed(std::uint8_t pumpId, bool state) {
+  if (!testLedOverrideActive_) {
+    for (PumpLedMapping &mapping : pumpLedMappings_) mapping.led.off();
+    testLedOverrideActive_ = true;
+  }
+  for (PumpLedMapping &mapping : pumpLedMappings_) {
+    if (mapping.pumpId == pumpId) {
+      mapping.led.setState(state);
+      return true;
+    }
+  }
+  return false;
+}
+
+void FeedbackControl::resetTestPumpLeds() {
+  testLedOverrideActive_ = false;
+  for (PumpLedMapping &mapping : pumpLedMappings_) mapping.led.off();
 }
 
 void FeedbackControl::playSuccess() {

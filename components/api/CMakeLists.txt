@@ -9,6 +9,9 @@ idf_component_register(
       storage
       bottle
       settings
+      media
+      system
+      developer
     PRIV_REQUIRES
       espressif__cjson
       esp_app_format

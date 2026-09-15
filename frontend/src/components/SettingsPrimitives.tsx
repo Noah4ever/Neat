@@ -1,18 +1,28 @@
 import { ChevronRight } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { PageInfoButton } from "./PageInfoButton";
 
 interface PageHeadingProps {
   title: string;
   subtitle: string;
   action?: ReactNode;
+  onTitleClick?: () => void;
 }
 
-export function PageHeading({ title, subtitle, action }: PageHeadingProps) {
+export function PageHeading({
+  title,
+  subtitle,
+  action,
+  onTitleClick,
+}: PageHeadingProps) {
   return (
     <header className="page-heading">
       <div>
-        <h1>{title}</h1>
+        <div className="page-title-with-info">
+          <h1 onClick={onTitleClick}>{title}</h1>
+          <PageInfoButton />
+        </div>
         <p>{subtitle}</p>
       </div>
       {action}

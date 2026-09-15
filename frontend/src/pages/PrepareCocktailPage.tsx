@@ -1,40 +1,70 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Play } from "lucide-react";
-import { useParams } from "react-router-dom";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { CocktailImage } from "../components/CocktailImage";
-import { SegmentedOptionGroup } from "../components/SegmentedOptionGroup";
-import { useDrinkSession } from "../state/useDrinkSession";
-import { drinkOverrides, getRecipe } from "../services/api";
-import type { Cocktail, DrinkStrength } from "../types/cocktail";
+import { PageInfoButton } from "../components/PageInfoButton";
 import { QueryMessage } from "../components/QueryMessage";
+import { SegmentedOptionGroup } from "../components/SegmentedOptionGroup";
+import { getDeviceSettings, getRecipe } from "../services/api";
 import { showApiErrorWithRetry } from "../services/notifications";
+import { ApiError } from "../services/errors";
+import { useDrinkSession } from "../state/useDrinkSession";
+import type { Cocktail, DrinkStrength } from "../types/cocktail";
+import type { DeviceSettings } from "../types/device";
 
 export function PrepareCocktailPage() {
   const { id } = useParams();
-  const query = useQuery({
+  const recipe = useQuery({
     queryKey: ["recipe", id],
     queryFn: () => getRecipe(Number(id)),
   });
-  if (!query.data) return <QueryMessage query={query} />;
-  return <Preparation key={query.data.id} cocktail={query.data} />;
-}
-function Preparation({ cocktail }: { cocktail: Cocktail }) {
-  const [size, setSize] = useState(cocktail.defaultSize);
-  const [strength, setStrength] = useState<DrinkStrength>(
-    cocktail.defaultStrength,
+  const settings = useQuery({
+    queryKey: ["device-settings"],
+    queryFn: getDeviceSettings,
+  });
+  if (!recipe.data) return <QueryMessage query={recipe} />;
+  if (!settings.data) return <QueryMessage query={settings} />;
+  return (
+    <Preparation
+      key={`${recipe.data.id}-${settings.data.defaultDrinkSizeMl}`}
+      cocktail={recipe.data}
+      settings={settings.data}
+    />
   );
+}
+
+function Preparation({
+  cocktail,
+  settings,
+}: {
+  cocktail: Cocktail;
+  settings: DeviceSettings;
+}) {
+  const [size, setSize] = useState(settings.defaultDrinkSizeMl);
+  const [strength, setStrength] = useState<DrinkStrength>("standard");
+  const [allowWithoutGlass, setAllowWithoutGlass] = useState(false);
   const { start, busy } = useDrinkSession();
   const navigate = useNavigate();
-  const mutation = useMutation({
-    mutationFn: () =>
+  const before = cocktail.preparationSteps.filter(
+    (step) => step.phase === "BEFORE",
+  );
+  const mutation = useMutation<void, Error, boolean>({
+    mutationFn: (ignoreGlass) =>
       start(cocktail, {
         recipeId: cocktail.id,
-        overrides: drinkOverrides(cocktail, size, strength),
+        sizeMl: size,
+        strength,
+        overrides: [],
+        ignoreGlass,
       }),
     onSuccess: () => navigate("/progress"),
-    onError: (error) => showApiErrorWithRetry(error, () => mutation.mutate()),
+    onError: (error) => {
+      if (error instanceof ApiError && error.key === "no_glass") {
+        setAllowWithoutGlass(true);
+      }
+      showApiErrorWithRetry(error, () => mutation.mutate(false));
+    },
   });
   return (
     <main className="prepare-layout">
@@ -44,8 +74,10 @@ function Preparation({ cocktail }: { cocktail: Cocktail }) {
       </section>
       <section className="prepare-details">
         <div className="prepare-title">
-          <span className="eyebrow">Your next favourite</span>
-          <h1>{cocktail.name}</h1>
+          <div className="page-title-with-info">
+            <h1>{cocktail.name}</h1>
+            <PageInfoButton />
+          </div>
           <p>{cocktail.description || "Made fresh, just for you."}</p>
         </div>
         <div className="control-block">
@@ -55,13 +87,13 @@ function Preparation({ cocktail }: { cocktail: Cocktail }) {
             label="Drink size"
             value={size}
             onChange={setSize}
-            options={cocktail.availableSizes.map((value) => ({
+            options={settings.drinkSizesMl.map((value) => ({
               value,
               label: `${value} ml`,
             }))}
           />
         </div>
-        {cocktail.ingredients.some((item) => item.category === "Alcohol") && (
+        {cocktail.ingredients.some((item) => item.category === "ALCOHOL") && (
           <div className="control-block">
             <span className="control-step">2</span>
             <h2>Alcohol strength</h2>
@@ -70,11 +102,24 @@ function Preparation({ cocktail }: { cocktail: Cocktail }) {
               value={strength}
               onChange={setStrength}
               options={[
-                { label: "Less", value: "less" },
+                {
+                  label: "Less",
+                  value: "less",
+                  disabled: !cocktail.strengthAdjustmentAvailable,
+                },
                 { label: "Standard", value: "standard" },
-                { label: "More", value: "more" },
+                {
+                  label: "More",
+                  value: "more",
+                  disabled: !cocktail.strengthAdjustmentAvailable,
+                },
               ]}
             />
+            {!cocktail.strengthAdjustmentAvailable && (
+              <p className="quiet-note">
+                This recipe keeps its original strength.
+              </p>
+            )}
           </div>
         )}
         <div className="ingredients-preview">
@@ -88,18 +133,28 @@ function Preparation({ cocktail }: { cocktail: Cocktail }) {
             ))}
           </div>
         </div>
-        <div className="before-mixing">
-          <h2>Before you start</h2>
-          <p>
-            {cocktail.manualItems.length
-              ? `Add ${cocktail.manualItems.join(", ").toLowerCase()} to your glass.`
-              : "Place your glass under the dispenser."}
-          </p>
-        </div>
+        {before.length > 0 && (
+          <div className="before-mixing mixing-preparation">
+            <div className="mixing-preparation__heading">
+              <h2>Before mixing</h2>
+              <small>Add these to your glass, then make your drink.</small>
+            </div>
+            <ul className="preparation-list">
+              {before.map((step, index) => (
+                <li key={`${step.text}-${index}`}>{step.text}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         <button
           className="primary-button make-drink"
-          disabled={busy || mutation.isPending || !cocktail.ingredients.length}
-          onClick={() => mutation.mutate()}
+          disabled={
+            busy ||
+            mutation.isPending ||
+            !cocktail.availability.available ||
+            !cocktail.ingredients.length
+          }
+          onClick={() => mutation.mutate(allowWithoutGlass)}
           type="button"
         >
           <Play size={21} fill="currentColor" />
@@ -107,11 +162,14 @@ function Preparation({ cocktail }: { cocktail: Cocktail }) {
             ? "Starting…"
             : busy
               ? "Machine is busy"
-              : "Make drink"}
+              : allowWithoutGlass
+                ? "Start without glass sensor"
+                : "Make drink"}
         </button>
-        {busy && (
-          <p className="quiet-note">
-            You can choose your drink while the current one is being made.
+        {allowWithoutGlass && (
+          <p className="sensor-override-note">
+            No glass was detected. Continuing will temporarily ignore the
+            sensor for this drink.
           </p>
         )}
       </section>

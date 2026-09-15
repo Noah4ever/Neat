@@ -16,7 +16,11 @@ public:
     std::optional<RecipeConfig> create(
         const std::string& name,
         const std::vector<RecipeItem>& items,
-        std::optional<std::string> imageKey = std::nullopt);
+        std::optional<std::string> imageKey = std::nullopt,
+        std::optional<std::string> subtitle = std::nullopt,
+        std::optional<std::string> description = std::nullopt,
+        std::uint16_t baseSizeMl = 400,
+        std::vector<PreparationStep> preparationSteps = {});
     bool update(const RecipeConfig& config);
     bool remove(std::uint16_t id);
 

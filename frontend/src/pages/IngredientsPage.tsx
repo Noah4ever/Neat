@@ -51,7 +51,7 @@ export function IngredientsPage() {
             className="primary-button"
             onClick={() => {
               setConfirmDelete(false);
-              setEditing({ id: 0, name: "" });
+              setEditing({ id: 0, name: "", category: "OTHER" });
             }}
           >
             <Plus size={20} /> Add ingredient
@@ -82,7 +82,11 @@ export function IngredientsPage() {
               >
                 <span className="management-row__copy">
                   <strong>{item.name}</strong>
-                  <small>Ingredient {item.id}</small>
+                  <small>
+                    {item.category.charAt(0) +
+                      item.category.slice(1).toLowerCase()}{" "}
+                    · Ingredient {item.id}
+                  </small>
                 </span>
                 <ChevronRight size={20} />
               </button>
@@ -147,6 +151,27 @@ export function IngredientsPage() {
                   )
                 }
               />
+            </label>
+            <label>
+              Category
+              <select
+                value={editing?.category ?? "OTHER"}
+                onChange={(event) =>
+                  setEditing(
+                    (current) =>
+                      current && {
+                        ...current,
+                        category: event.target.value as Ingredient["category"],
+                      },
+                  )
+                }
+              >
+                <option value="ALCOHOL">Alcohol</option>
+                <option value="JUICE">Juice</option>
+                <option value="MIXER">Mixer</option>
+                <option value="SYRUP">Syrup</option>
+                <option value="OTHER">Other</option>
+              </select>
             </label>
             <div className="button-row">
               {!!editing?.id && (

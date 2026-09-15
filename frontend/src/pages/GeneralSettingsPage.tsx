@@ -1,8 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { FullscreenButton } from "../components/FullscreenButton";
-import { Modal } from "../components/Modal";
 import {
   PageHeading,
   SettingsGroup,
@@ -13,15 +12,46 @@ import {
   getDevice,
   getDeviceSettings,
   getHealth,
-  restartDevice,
   updateDeviceSettings,
 } from "../services/api";
-import { useDrinkSession } from "../state/useDrinkSession";
 import { showApiError } from "../services/notifications";
+import type { DeviceSettings } from "../types/device";
+import { useDeveloperMode } from "../state/developerModeContext";
+
+function SettingsToggleRow({
+  checked,
+  onChange,
+  label,
+  description,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  label: string;
+  description: string;
+}) {
+  return (
+    <button
+      type="button"
+      className="settings-row settings-toggle-row"
+      role="switch"
+      aria-checked={checked}
+      onClick={onChange}
+    >
+      <span className="settings-row__copy">
+        <strong>{label}</strong>
+        <small>{description}</small>
+      </span>
+      <span className="toggle-control" aria-hidden="true">
+        <span />
+      </span>
+    </button>
+  );
+}
+
 export function GeneralSettingsPage({
   page = "general",
 }: {
-  page?: "general" | "display" | "about";
+  page?: "general" | "about";
 }) {
   const device = useQuery({ queryKey: ["device"], queryFn: getDevice });
   const health = useQuery({ queryKey: ["health"], queryFn: getHealth });
@@ -29,41 +59,41 @@ export function GeneralSettingsPage({
     queryKey: ["device-settings"],
     queryFn: getDeviceSettings,
   });
+  const [localDraft, setDraft] = useState<DeviceSettings | null>(null);
   const cache = useQueryClient();
-  const { busy } = useDrinkSession();
-  const [confirm, setConfirm] = useState(false);
-  const restart = useMutation({
-    mutationFn: restartDevice,
+  const { enabled: developerEnabled, enable: enableDeveloper } =
+    useDeveloperMode();
+  const taps = useRef<number[]>([]);
+  const save = useMutation({
+    mutationFn: updateDeviceSettings,
     onSuccess: () => {
-      setConfirm(false);
-      toast.success("Restart requested");
+      void cache.invalidateQueries({ queryKey: ["device-settings"] });
+      toast.success("Settings saved");
     },
     onError: showApiError,
   });
-  const saveSettings = useMutation({
-    mutationFn: updateDeviceSettings,
-    onSuccess: () =>
-      void cache.invalidateQueries({ queryKey: ["device-settings"] }),
-    onError: showApiError,
-  });
-  return (
-    <div className="settings-page">
-      <PageHeading
-        title={
-          page === "general"
-            ? "Settings"
-            : page === "display"
-              ? "Display"
-              : "About"
-        }
-        subtitle={
-          page === "display"
-            ? "Make Neat feel at home on this screen."
-            : "Your machine, at a glance."
-        }
-      />
-      {page !== "display" &&
-        (!device.data ? (
+  const draft = localDraft ?? settings.data ?? null;
+
+  if (page === "about") {
+    return (
+      <div className="settings-page">
+        <PageHeading
+          title="About"
+          subtitle="Information about this Neat machine."
+          onTitleClick={() => {
+            const now = Date.now();
+            taps.current = [
+              ...taps.current.filter((value) => now - value < 3000),
+              now,
+            ];
+            if (taps.current.length >= 5 && !developerEnabled) {
+              enableDeveloper();
+              taps.current = [];
+              toast.success("Developer settings enabled");
+            }
+          }}
+        />
+        {!device.data ? (
           <QueryMessage query={device} />
         ) : (
           <SettingsGroup>
@@ -72,81 +102,88 @@ export function GeneralSettingsPage({
             <SettingsRow title="Firmware" value={device.data.version} />
             <SettingsRow
               title="Connection"
-              value={health.data?.status ?? "Checking…"}
+              value={health.data?.status === "ok" ? "Connected" : "Checking…"}
             />
           </SettingsGroup>
-        ))}
-      {page !== "about" && (
-        <section className="settings-card">
-          <h2>Full screen</h2>
-          <p>Keep the focus on your drinks.</p>
-          <FullscreenButton />
-          <p className="muted">
-            On iPhone or iPad, you can also use Safari → Share → Add to Home
-            Screen, then open Neat from its icon.
-          </p>
-        </section>
-      )}
-      {page === "general" && settings.data && (
-        <SettingsGroup>
-          <div className="settings-row">
-            <span className="settings-row__copy">
-              <strong>Activate LEDs while pumps are running</strong>
-              <small>Show which bottles are currently dispensing.</small>
-            </span>
-            <button
-              type="button"
-              className="toggle-control"
-              role="switch"
-              aria-checked={settings.data.activateLedWhenPumpActive}
-              aria-label="Activate LEDs while pumps are running"
-              disabled={saveSettings.isPending}
-              onClick={() =>
-                saveSettings.mutate({
-                  activateLedWhenPumpActive:
-                    !settings.data.activateLedWhenPumpActive,
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="settings-page">
+      <PageHeading
+        title="Settings"
+        subtitle="The everyday behavior of your Neat machine."
+      />
+      {!draft ? (
+        <QueryMessage query={settings} />
+      ) : (
+        <>
+          <SettingsGroup>
+            <div className="settings-row">
+              <span className="settings-row__copy">
+                <strong>Full screen</strong>
+                <small>Use the whole display for Neat.</small>
+              </span>
+              <FullscreenButton />
+            </div>
+            <SettingsToggleRow
+              label="Glass detection"
+              description="Pause dispensing if the glass is removed. Turn this off for paper cups the sensor cannot detect."
+              checked={draft.requireGlassDetection}
+              onChange={() =>
+                setDraft({
+                  ...draft,
+                  requireGlassDetection: !draft.requireGlassDetection,
                 })
               }
-            >
-              <span />
-            </button>
-          </div>
-        </SettingsGroup>
-      )}
-      {page === "general" && settings.error && (
-        <QueryMessage query={settings} />
-      )}
-      {page === "general" && (
-        <button
-          className="danger-button"
-          disabled={busy}
-          onClick={() => setConfirm(true)}
-        >
-          Restart machine
-        </button>
-      )}
-      <Modal
-        open={confirm}
-        onOpenChange={setConfirm}
-        title="Restart Neat?"
-        description="The machine will briefly disconnect while it restarts."
-      >
-        <div className="button-row">
+            />
+            <SettingsToggleRow
+              label="Active pump LEDs"
+              description="Light the bottles that are dispensing."
+              checked={draft.activateLedWhenPumpActive}
+              onChange={() =>
+                setDraft({
+                  ...draft,
+                  activateLedWhenPumpActive:
+                    !draft.activateLedWhenPumpActive,
+                })
+              }
+            />
+            <div className="settings-row">
+              <span className="settings-row__copy">
+                <strong>Default drink size</strong>
+                <small>Preselected when someone chooses a cocktail.</small>
+              </span>
+              <select
+                className="compact-select"
+                aria-label="Default drink size"
+                value={draft.defaultDrinkSizeMl}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    defaultDrinkSizeMl: Number(event.target.value),
+                  })
+                }
+              >
+                {draft.drinkSizesMl.map((size) => (
+                  <option key={size} value={size}>
+                    {size} ml
+                  </option>
+                ))}
+              </select>
+            </div>
+          </SettingsGroup>
           <button
-            className="secondary-button"
-            onClick={() => setConfirm(false)}
+            className="primary-button settings-save-button"
+            disabled={save.isPending}
+            onClick={() => save.mutate(draft)}
           >
-            Cancel
+            {save.isPending ? "Saving…" : "Save settings"}
           </button>
-          <button
-            className="danger-button"
-            disabled={busy || restart.isPending}
-            onClick={() => restart.mutate()}
-          >
-            Restart
-          </button>
-        </div>
-      </Modal>
+        </>
+      )}
     </div>
   );
 }

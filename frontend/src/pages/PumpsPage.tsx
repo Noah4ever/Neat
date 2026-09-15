@@ -1,22 +1,34 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Plus, Wine } from "lucide-react";
+import {
+  ChevronRight,
+  Droplets,
+  Gauge,
+  RefreshCcw,
+  SlidersHorizontal,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Modal } from "../components/Modal";
 import { PageHeading } from "../components/SettingsPrimitives";
+import { ProgressMeter } from "../components/ProgressMeter";
 import { QueryMessage } from "../components/QueryMessage";
+import { SearchBar } from "../components/SearchBar";
 import {
   assignPump,
-  deletePump,
+  finishCalibration,
   getBottles,
   getIngredients,
   getPumps,
-  savePump,
+  startCalibration,
+  startCleaning,
   updateBottle,
 } from "../services/api";
+import { showApiError } from "../services/notifications";
 import { useDrinkSession } from "../state/useDrinkSession";
 import type { BottleState, PumpConfig } from "../types/device";
-import { showApiError } from "../services/notifications";
+
+type PumpArea = "bottles" | "cleaning" | "calibration";
+
 export function PumpsPage() {
   const pumps = useQuery({ queryKey: ["pumps"], queryFn: getPumps });
   const ingredients = useQuery({
@@ -25,37 +37,47 @@ export function PumpsPage() {
   });
   const bottles = useQuery({ queryKey: ["bottles"], queryFn: getBottles });
   const cache = useQueryClient();
-  const { busy } = useDrinkSession();
-  const [editing, setEditing] = useState<PumpConfig | null>(null);
-  const [isNew, setIsNew] = useState(false);
-  const [confirm, setConfirm] = useState(false);
+  const { status, busy, stopping, stop } = useDrinkSession();
+  const [area, setArea] = useState<PumpArea>("bottles");
+  const [assigning, setAssigning] = useState<PumpConfig | null>(null);
+  const [ingredientSearch, setIngredientSearch] = useState("");
+  const ingredientChoices = [...(ingredients.data ?? [])]
+    .filter((ingredient) =>
+      ingredient.name
+        .toLocaleLowerCase()
+        .includes(ingredientSearch.trim().toLocaleLowerCase()),
+    )
+    .sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+    );
   const [editingBottle, setEditingBottle] = useState<BottleState | null>(null);
-  const mutation = useMutation({
-    mutationFn: async (remove: boolean) => {
-      if (!editing) return;
-      if (remove) await deletePump(editing.id);
-      else {
-        await savePump(editing, isNew);
-        if (!isNew) await assignPump(editing.id, editing.ingredientId);
-      }
-    },
+  const [cleaningPump, setCleaningPump] = useState("all");
+  const [calibrationPump, setCalibrationPump] = useState("");
+  const [duration, setDuration] = useState(30);
+  const [volume, setVolume] = useState("");
+
+  const refreshPumps = () => {
+    void cache.invalidateQueries({ queryKey: ["pumps"] });
+    void cache.invalidateQueries({ queryKey: ["recipes"] });
+  };
+  const assignment = useMutation({
+    mutationFn: (value: { pumpId: number; ingredientId: number | null }) =>
+      assignPump(value.pumpId, value.ingredientId),
     onSuccess: () => {
-      void cache.invalidateQueries({ queryKey: ["pumps"] });
-      setEditing(null);
-      toast.success("Pumps updated");
+      refreshPumps();
+      setAssigning(null);
+      toast.success("Ingredient assigned");
     },
     onError: showApiError,
   });
   const bottleMutation = useMutation({
-    mutationFn: async (replaced: boolean) => {
-      if (!editingBottle) return;
-      await updateBottle(editingBottle.pumpId, {
-        capacityMl: editingBottle.capacityMl,
-        remainingMl: replaced
-          ? editingBottle.capacityMl
-          : editingBottle.remainingMl,
-      });
-    },
+    mutationFn: (value: { bottle: BottleState; replaced: boolean }) =>
+      updateBottle(value.bottle.pumpId, {
+        capacityMl: value.bottle.capacityMl,
+        remainingMl: value.replaced
+          ? value.bottle.capacityMl
+          : value.bottle.remainingMl,
+      }),
     onSuccess: () => {
       void cache.invalidateQueries({ queryKey: ["bottles"] });
       setEditingBottle(null);
@@ -63,294 +85,393 @@ export function PumpsPage() {
     },
     onError: showApiError,
   });
+  const cleaning = useMutation({
+    mutationFn: () =>
+      startCleaning(
+        cleaningPump === "all" ? undefined : Number(cleaningPump),
+      ),
+    onSuccess: () => cache.invalidateQueries({ queryKey: ["status"] }),
+    onError: showApiError,
+  });
+  const calibration = useMutation({
+    mutationFn: () =>
+      startCalibration(Number(calibrationPump), duration * 1000),
+    onSuccess: () => cache.invalidateQueries({ queryKey: ["status"] }),
+    onError: showApiError,
+  });
+  const finish = useMutation({
+    mutationFn: () => finishCalibration(Number(volume)),
+    onSuccess: () => {
+      void cache.invalidateQueries({ queryKey: ["status"] });
+      refreshPumps();
+      setVolume("");
+      toast.success("Calibration saved");
+    },
+    onError: showApiError,
+  });
+
+  const cleaningRunning =
+    status?.kind === "cleaning" && status.state === "running";
+  const calibrationRunning =
+    status?.kind === "calibration" && status.state === "running";
+  const calibrationMeasured =
+    status?.kind === "calibration" && status.state === "finished";
+
   return (
     <div className="settings-page">
       <PageHeading
         title="Pumps"
-        subtitle="Assign an ingredient and output to each pump."
-        action={
-          <button
-            className="primary-button"
-            disabled={busy}
-            onClick={() => {
-              setIsNew(true);
-              setConfirm(false);
-              setEditing({
-                id:
-                  Math.max(0, ...(pumps.data ?? []).map((item) => item.id)) + 1,
-                ingredientId: null,
-                mlPerSec: null,
-                output: { type: 0, channel: 4 },
-              });
-            }}
-          >
-            <Plus size={20} /> Add pump
-          </button>
-        }
+        subtitle="Change bottles, assign ingredients, rinse and calibrate."
       />
+      <nav className="pump-area-selector" aria-label="Pump tasks">
+        <button
+          aria-pressed={area === "bottles"}
+          onClick={() => setArea("bottles")}
+          type="button"
+        >
+          <Gauge size={19} /> Bottles
+        </button>
+        <button
+          aria-pressed={area === "cleaning"}
+          onClick={() => setArea("cleaning")}
+          type="button"
+        >
+          <Droplets size={19} /> Cleaning
+        </button>
+        <button
+          aria-pressed={area === "calibration"}
+          onClick={() => setArea("calibration")}
+          type="button"
+        >
+          <SlidersHorizontal size={19} /> Calibration
+        </button>
+      </nav>
+
       {!pumps.data ? (
         <QueryMessage query={pumps} />
-      ) : (
-        <>
-          <h2 className="settings-section-label">Pump setup</h2>
-          <div className="management-list">
-            {pumps.data.map((pump) => (
-              <button
+      ) : area === "bottles" ? (
+        <div className="pump-product-grid">
+          {pumps.data.map((pump) => {
+            const bottle = bottles.data?.find(
+              (item) => item.pumpId === pump.id,
+            );
+            const ingredient = ingredients.data?.find(
+              (item) => item.id === pump.ingredientId,
+            );
+            const percentage = bottle?.capacityMl
+              ? Math.min(
+                  100,
+                  Math.max(0, (bottle.remainingMl / bottle.capacityMl) * 100),
+                )
+              : 0;
+            const low = !!bottle && percentage <= 20;
+            const bottleValue = bottle ?? {
+              pumpId: pump.id,
+              capacityMl: 700,
+              remainingMl: 700,
+            };
+            return (
+              <article
+                className="pump-product-card"
+                data-low={low || undefined}
                 key={pump.id}
-                className="management-row"
-                disabled={busy}
-                onClick={() => {
-                  setIsNew(false);
-                  setConfirm(false);
-                  setEditing(structuredClone(pump));
-                }}
               >
-                <span className="management-row__copy">
-                  <strong>
-                    Pump {pump.id} ·{" "}
-                    {ingredients.data?.find(
-                      (item) => item.id === pump.ingredientId,
-                    )?.name ?? "Unassigned"}
-                  </strong>
-                  <small>
-                    GPIO {pump.output.channel} ·{" "}
-                    {pump.mlPerSec
-                      ? `${pump.mlPerSec.toFixed(2)} ml/s`
-                      : "Needs calibration"}
-                  </small>
-                </span>
-                <ChevronRight size={20} />
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-      {busy && (
-        <p className="muted">
-          Finish or stop the current operation before editing pumps.
-        </p>
-      )}
-      {!!pumps.data?.length && (
-        <section className="bottle-section">
-          <div className="section-heading">
-            <div>
-              <h2>Bottle estimates</h2>
-              <p className="muted">
-                Estimated amounts help with refills and never block a drink.
-              </p>
-            </div>
-          </div>
-          <div className="bottle-list">
-            {pumps.data.map((pump) => {
-              const bottle = bottles.data?.find(
-                (item) => item.pumpId === pump.id,
-              );
-              const percentage = bottle?.capacityMl
-                ? Math.min(100, (bottle.remainingMl / bottle.capacityMl) * 100)
-                : 0;
-              const ingredient = ingredients.data?.find(
-                (item) => item.id === pump.ingredientId,
-              );
-              return (
-                <article
-                  className="bottle-row"
-                  data-low={bottle ? percentage <= 20 : undefined}
-                  key={pump.id}
+                <div className="pump-card-top">
+                  <span>Bottle {pump.id}</span>
+                  <span className={pump.mlPerSec ? "status-chip" : "status-chip warning"}>
+                    {pump.mlPerSec ? "Ready" : "Needs calibration"}
+                  </span>
+                </div>
+                <div
+                  className="bottle-visual"
+                  aria-label={`${Math.round(percentage)} percent remaining`}
                 >
-                  <Wine size={24} />
-                  <div className="bottle-row__content">
-                    <div className="bottle-row__heading">
-                      <span>
-                        <strong>{ingredient?.name ?? "Unassigned"}</strong>
-                        <small>Pump {pump.id}</small>
-                      </span>
-                      <span className="bottle-row__amount">
-                        <small>Estimated remaining</small>
-                        <strong>
-                          {bottle
-                            ? `${Math.round(bottle.remainingMl)} ml of ${bottle.capacityMl} ml`
-                            : "Not configured"}
-                        </strong>
-                      </span>
-                    </div>
-                    <div
-                      className="bottle-level"
-                      role="progressbar"
-                      aria-label={`Estimated amount for pump ${pump.id}`}
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={Math.round(percentage)}
-                    >
-                      <span style={{ width: `${percentage}%` }} />
-                    </div>
+                  <div className="bottle-neck" />
+                  <div className="bottle-body">
+                    <span style={{ height: `${percentage}%` }} />
                   </div>
+                  {low && (
+                    <button
+                      className="replace-bottle-fab"
+                      aria-label={`Mark bottle ${pump.id} as replaced`}
+                      disabled={bottleMutation.isPending || busy}
+                      onClick={() =>
+                        bottleMutation.mutate({
+                          bottle: bottleValue,
+                          replaced: true,
+                        })
+                      }
+                      type="button"
+                    >
+                      <RefreshCcw size={20} />
+                    </button>
+                  )}
+                </div>
+                <button
+                  className="pump-ingredient-button"
+                  disabled={busy}
+                  onClick={() => {
+                    setIngredientSearch("");
+                    setAssigning(structuredClone(pump));
+                  }}
+                  type="button"
+                >
+                  <span>
+                    <small>Ingredient</small>
+                    <strong>{ingredient?.name ?? "Choose ingredient"}</strong>
+                  </span>
+                  <ChevronRight size={20} />
+                </button>
+                <div className="pump-product-copy">
+                  <strong>
+                    {bottle
+                      ? `${Math.round(bottle.remainingMl)} ml of ${bottle.capacityMl} ml`
+                      : "Set bottle size"}
+                  </strong>
+                  <small>{low ? "Running low" : "Estimated remaining"}</small>
+                </div>
+                <div className="pump-card-actions">
                   <button
+                    onClick={() => setEditingBottle(structuredClone(bottleValue))}
                     type="button"
-                    className="secondary-button"
-                    onClick={() =>
-                      setEditingBottle(
-                        bottle
-                          ? structuredClone(bottle)
-                          : { pumpId: pump.id, capacityMl: 700, remainingMl: 700 },
-                      )
-                    }
                   >
-                    {bottle ? "Bottle details" : "Set bottle"}
-                    <ChevronRight size={18} />
+                    Bottle details
                   </button>
-                </article>
-              );
-            })}
-          </div>
-        </section>
-      )}
-      <Modal
-        open={!!editing}
-        onOpenChange={(open) => {
-          if (!open && !mutation.isPending) setEditing(null);
-        }}
-        title={
-          confirm ? "Delete pump?" : isNew ? "Add pump" : `Pump ${editing?.id}`
-        }
-        description={
-          confirm
-            ? "This removes its configuration."
-            : "The current firmware uses GPIO outputs."
-        }
-      >
-        {editing &&
-          (confirm ? (
-            <div className="button-row">
-              <button
-                className="secondary-button"
-                onClick={() => setConfirm(false)}
-              >
-                Cancel
-              </button>
+                  <button
+                    onClick={() => {
+                      setCalibrationPump(String(pump.id));
+                      setArea("calibration");
+                    }}
+                    type="button"
+                  >
+                    Calibrate
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : area === "cleaning" ? (
+        <section className="settings-card pump-task-card">
+          <h2>Rinse pumps</h2>
+          <p>
+            Put the inlet tubes in clean water and place a large empty container
+            under the outlet.
+          </p>
+          <label>
+            Pumps to rinse
+            <select
+              value={cleaningPump}
+              disabled={busy}
+              onChange={(event) => setCleaningPump(event.target.value)}
+            >
+              <option value="all">All pumps</option>
+              {pumps.data.map((pump) => (
+                <option key={pump.id} value={pump.id}>
+                  Pump {pump.id}
+                </option>
+              ))}
+            </select>
+          </label>
+          {cleaningRunning ? (
+            <>
+              <p>{status.label}</p>
+              <ProgressMeter value={status.progress} label="Cleaning progress" />
               <button
                 className="danger-button"
-                disabled={mutation.isPending || busy}
-                onClick={() => mutation.mutate(true)}
+                disabled={stopping}
+                onClick={() => void stop()}
+                type="button"
               >
-                Delete pump
+                Stop rinsing
               </button>
-            </div>
+            </>
           ) : (
+            <button
+              className="primary-button"
+              disabled={busy || cleaning.isPending || !pumps.data.length}
+              onClick={() => cleaning.mutate()}
+              type="button"
+            >
+              {cleaning.isPending ? "Starting…" : "Start rinsing"}
+            </button>
+          )}
+        </section>
+      ) : (
+        <section className="settings-card pump-task-card">
+          <h2>
+            {calibrationMeasured ? "Enter your measurement" : "Calibrate a pump"}
+          </h2>
+          <p>
+            Put a measuring jug under the outlet. Neat runs the selected pump,
+            then calculates its flow.
+          </p>
+          {!calibrationMeasured && (
             <form
               onSubmit={(event) => {
                 event.preventDefault();
-                mutation.mutate(false);
+                calibration.mutate();
               }}
             >
               <div className="form-fields">
                 <label>
-                  Pump ID
-                  <input
-                    type="number"
-                    min={0}
-                    max={255}
-                    required
-                    disabled={!isNew}
-                    value={editing.id}
-                    onChange={(event) =>
-                      setEditing({ ...editing, id: Number(event.target.value) })
-                    }
-                  />
-                </label>
-                <label>
-                  GPIO pin
-                  <input
-                    type="number"
-                    min={0}
-                    max={30}
-                    required
-                    value={editing.output.channel}
-                    onChange={(event) =>
-                      setEditing({
-                        ...editing,
-                        output: {
-                          type: 0,
-                          channel: Number(event.target.value),
-                        },
-                      })
-                    }
-                  />
-                </label>
-                <label>
-                  Ingredient
+                  Pump
                   <select
-                    value={editing.ingredientId ?? ""}
-                    onChange={(event) =>
-                      setEditing({
-                        ...editing,
-                        ingredientId:
-                          event.target.value === ""
-                            ? null
-                            : Number(event.target.value),
-                      })
-                    }
+                    required
+                    disabled={busy}
+                    value={calibrationPump}
+                    onChange={(event) => setCalibrationPump(event.target.value)}
                   >
-                    <option value="">Unassigned</option>
-                    {ingredients.data?.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.name}
+                    <option value="">Choose a pump</option>
+                    {pumps.data.map((pump) => (
+                      <option key={pump.id} value={pump.id}>
+                        Pump {pump.id}
+                        {pump.mlPerSec ? " · calibrated" : " · not calibrated"}
                       </option>
                     ))}
                   </select>
                 </label>
                 <label>
-                  Calibrated flow · ml/s
+                  Run time · seconds
                   <input
                     type="number"
-                    min={0.001}
-                    step="any"
-                    placeholder="Not calibrated"
-                    value={editing.mlPerSec ?? ""}
-                    onChange={(event) =>
-                      setEditing({
-                        ...editing,
-                        mlPerSec:
-                          event.target.value === ""
-                            ? null
-                            : Number(event.target.value),
-                      })
-                    }
+                    required
+                    min={1}
+                    max={120}
+                    disabled={busy}
+                    value={duration}
+                    onChange={(event) => setDuration(Number(event.target.value))}
                   />
                 </label>
               </div>
-              <div className="button-row">
-                {!isNew && (
+              {calibrationRunning ? (
+                <>
+                  <p>{status.label}</p>
+                  <ProgressMeter
+                    value={status.progress}
+                    label="Calibration progress"
+                  />
                   <button
-                    type="button"
                     className="danger-button"
-                    onClick={() => setConfirm(true)}
+                    disabled={stopping}
+                    onClick={() => void stop()}
+                    type="button"
                   >
-                    Delete
+                    Stop calibration
                   </button>
-                )}
+                </>
+              ) : (
                 <button
                   className="primary-button"
-                  disabled={mutation.isPending || busy}
+                  disabled={busy || calibration.isPending || !calibrationPump}
                 >
-                  Save pump
+                  Start calibration
+                </button>
+              )}
+            </form>
+          )}
+          {calibrationMeasured && (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                finish.mutate();
+              }}
+            >
+              <label>
+                Collected liquid · ml
+                <input
+                  autoFocus
+                  type="number"
+                  min={0.1}
+                  max={10000}
+                  step="any"
+                  required
+                  value={volume}
+                  onChange={(event) => setVolume(event.target.value)}
+                />
+              </label>
+              <div className="button-row">
+                <button
+                  className="secondary-button"
+                  disabled={stopping || finish.isPending}
+                  onClick={() => void stop()}
+                  type="button"
+                >
+                  Discard
+                </button>
+                <button
+                  className="primary-button"
+                  disabled={finish.isPending || !(Number(volume) > 0)}
+                >
+                  Save calibration
                 </button>
               </div>
             </form>
-          ))}
+          )}
+        </section>
+      )}
+
+      <Modal
+        open={!!assigning}
+        onOpenChange={(open) => {
+          if (!open && !assignment.isPending) setAssigning(null);
+        }}
+        title="Choose ingredient"
+        description={`Select what is connected to bottle ${assigning?.id ?? ""}.`}
+      >
+        {assigning && (
+          <>
+          <SearchBar
+            value={ingredientSearch}
+            onChange={setIngredientSearch}
+            placeholder="Search ingredients"
+          />
+          <div className="ingredient-choice-list">
+            <button
+              aria-pressed={assigning.ingredientId === null}
+              onClick={() =>
+                assignment.mutate({ pumpId: assigning.id, ingredientId: null })
+              }
+              type="button"
+            >
+              Unassigned
+            </button>
+            {ingredientChoices.map((ingredient) => (
+              <button
+                aria-pressed={assigning.ingredientId === ingredient.id}
+                key={ingredient.id}
+                onClick={() =>
+                  assignment.mutate({
+                    pumpId: assigning.id,
+                    ingredientId: ingredient.id,
+                  })
+                }
+                type="button"
+              >
+                {ingredient.name}
+              </button>
+            ))}
+            {ingredientChoices.length === 0 && (
+              <p className="ingredient-choice-empty">No ingredients found.</p>
+            )}
+          </div>
+          </>
+        )}
       </Modal>
+
       <Modal
         open={!!editingBottle}
         onOpenChange={(open) => {
           if (!open && !bottleMutation.isPending) setEditingBottle(null);
         }}
-        title={`Bottle on pump ${editingBottle?.pumpId ?? ""}`}
-        description="This is an estimate and does not prevent dispensing."
+        title={`Bottle ${editingBottle?.pumpId ?? ""}`}
+        description="Keep the estimate useful for the next person."
       >
         {editingBottle && (
           <form
             onSubmit={(event) => {
               event.preventDefault();
-              bottleMutation.mutate(false);
+              bottleMutation.mutate({ bottle: editingBottle, replaced: false });
             }}
           >
             <div className="form-fields">
@@ -358,7 +479,7 @@ export function PumpsPage() {
                 Bottle capacity · ml
                 <input
                   type="number"
-                  min={0}
+                  min={1}
                   max={65535}
                   required
                   value={editingBottle.capacityMl}
@@ -387,12 +508,17 @@ export function PumpsPage() {
                 />
               </label>
             </div>
-            <div className="button-row bottle-actions">
+            <div className="button-row">
               <button
-                type="button"
                 className="secondary-button"
                 disabled={bottleMutation.isPending}
-                onClick={() => bottleMutation.mutate(true)}
+                onClick={() =>
+                  bottleMutation.mutate({
+                    bottle: editingBottle,
+                    replaced: true,
+                  })
+                }
+                type="button"
               >
                 Bottle replaced
               </button>

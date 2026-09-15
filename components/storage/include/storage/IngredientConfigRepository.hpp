@@ -13,7 +13,9 @@ public:
 
     std::vector<IngredientConfig> loadAll();
     std::optional<IngredientConfig> findById(std::uint16_t id);
-    std::optional<IngredientConfig> create(const std::string& name);
+    std::optional<IngredientConfig> create(
+        const std::string& name,
+        IngredientCategory category = IngredientCategory::OTHER);
     bool update(const IngredientConfig& config);
     bool remove(std::uint16_t id);
 

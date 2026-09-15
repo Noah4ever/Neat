@@ -4,9 +4,9 @@ React + TypeScript + Vite. Start with `npm install` and `npm run dev`; verify wi
 
 ## ESP32 integration
 
-`src/services/api.ts` is the single REST boundary. `USE_MOCK_API = true` keeps this build in demo mode. All editing is in memory and resets when the page reloads. Demo drinks run for 20 seconds, cleaning for 15 seconds, and calibration for the selected duration. No hardware commands are sent in this mode.
+`src/services/api.ts` is the single REST boundary. `VITE_USE_MOCK_API=true` keeps a build in demo mode. All editing is in memory and resets when the page reloads. Demo drinks run for 20 seconds, cleaning for 15 seconds, and calibration for the selected duration. No hardware commands are sent in this mode.
 
-Set `USE_MOCK_API = false` when the firmware implements the contracts below. Relative `/api/...` URLs work when the ESP serves the built frontend. For Vite development against a device, add a `/api` proxy in `vite.config.ts` pointing at its address.
+The checked-in `.env` sets `VITE_USE_MOCK_API=false`, so normal development and production builds use the real API. Change that single value to `true` only when you intentionally want the in-memory mock. Relative `/api/...` URLs work when the ESP serves the built frontend. For Vite development against a device, add a `/api` proxy in `vite.config.ts` pointing at its address.
 
 Implemented calls:
 

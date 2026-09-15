@@ -25,6 +25,8 @@ public:
 
   void setPumpLed(std::uint8_t pumpId, bool state);
   void turnOffAllPumpLeds();
+  bool setTestPumpLed(std::uint8_t pumpId, bool state);
+  void resetTestPumpLeds();
 
   void playSuccess();
   void playError();
@@ -49,6 +51,7 @@ private:
 
   std::vector<PumpLedMapping> pumpLedMappings_;
   Buzzer buzzer_;
+  bool testLedOverrideActive_ = false;
 
   const Tone *currentMelody_ = nullptr;
   std::size_t currentMelodySize_ = 0;

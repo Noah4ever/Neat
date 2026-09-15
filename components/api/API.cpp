@@ -172,35 +172,95 @@ bool readIdFromPath(const std::string &path, std::string_view prefix,
 }
 
 cJSON *ingredientJson(const IngredientConfig &ingredient) {
+  const char *category = "OTHER";
+  switch (ingredient.category) {
+  case IngredientCategory::ALCOHOL: category = "ALCOHOL"; break;
+  case IngredientCategory::JUICE: category = "JUICE"; break;
+  case IngredientCategory::MIXER: category = "MIXER"; break;
+  case IngredientCategory::SYRUP: category = "SYRUP"; break;
+  case IngredientCategory::OTHER: category = "OTHER"; break;
+  }
   cJSON *json = cJSON_CreateObject();
   if (!json || !cJSON_AddNumberToObject(json, "id", ingredient.id) ||
-      !cJSON_AddStringToObject(json, "name", ingredient.name.c_str())) {
+      !cJSON_AddStringToObject(json, "name", ingredient.name.c_str()) ||
+      !cJSON_AddStringToObject(json, "category", category)) {
     cJSON_Delete(json);
     return nullptr;
   }
   return json;
 }
 
-cJSON *recipeJson(const RecipeConfig &recipe) {
+bool readIngredientCategory(const cJSON *value, IngredientCategory &category) {
+  if (!cJSON_IsString(value) || !value->valuestring) return false;
+  const std::string name = value->valuestring;
+  if (name == "ALCOHOL") category = IngredientCategory::ALCOHOL;
+  else if (name == "JUICE") category = IngredientCategory::JUICE;
+  else if (name == "MIXER") category = IngredientCategory::MIXER;
+  else if (name == "SYRUP") category = IngredientCategory::SYRUP;
+  else if (name == "OTHER") category = IngredientCategory::OTHER;
+  else return false;
+  return true;
+}
+
+cJSON *recipeJson(const RecipeConfig &recipe,
+                  const RecipeAvailability &availability,
+                  bool strengthAdjustmentAvailable) {
   cJSON *json = cJSON_CreateObject();
   cJSON *items = cJSON_CreateArray();
+  cJSON *steps = cJSON_CreateArray();
   if (!json || !items || !cJSON_AddNumberToObject(json, "id", recipe.id) ||
-      !cJSON_AddStringToObject(json, "name", recipe.name.c_str())) {
+      !steps || !cJSON_AddStringToObject(json, "name", recipe.name.c_str()) ||
+      !cJSON_AddNumberToObject(json, "baseSizeMl", recipe.baseSizeMl) ||
+      !cJSON_AddBoolToObject(json, "strengthAdjustmentAvailable",
+                            strengthAdjustmentAvailable)) {
     cJSON_Delete(json);
     cJSON_Delete(items);
+    cJSON_Delete(steps);
     return nullptr;
   }
 
   if (recipe.imageKey) {
     if (!cJSON_AddStringToObject(json, "imageKey", recipe.imageKey->c_str())) {
       cJSON_Delete(items);
+      cJSON_Delete(steps);
       cJSON_Delete(json);
       return nullptr;
     }
   } else if (!cJSON_AddNullToObject(json, "imageKey")) {
     cJSON_Delete(items);
+    cJSON_Delete(steps);
     cJSON_Delete(json);
     return nullptr;
+  }
+
+  const auto addOptionalString = [json](
+                                     const char *key,
+                                     const std::optional<std::string> &value) {
+    return value ? cJSON_AddStringToObject(json, key, value->c_str()) != nullptr
+                 : cJSON_AddNullToObject(json, key) != nullptr;
+  };
+  if (!addOptionalString("subtitle", recipe.subtitle) ||
+      !addOptionalString("description", recipe.description)) {
+    cJSON_Delete(items);
+    cJSON_Delete(steps);
+    cJSON_Delete(json);
+    return nullptr;
+  }
+
+  for (const PreparationStep &step : recipe.preparationSteps) {
+    cJSON *stepJson = cJSON_CreateObject();
+    if (!stepJson ||
+        !cJSON_AddStringToObject(
+            stepJson, "phase",
+            step.phase == PreparationPhase::BEFORE ? "BEFORE" : "AFTER") ||
+        !cJSON_AddStringToObject(stepJson, "text", step.text.c_str()) ||
+        !cJSON_AddItemToArray(steps, stepJson)) {
+      cJSON_Delete(stepJson);
+      cJSON_Delete(items);
+      cJSON_Delete(steps);
+      cJSON_Delete(json);
+      return nullptr;
+    }
   }
 
   for (const RecipeItem &item : recipe.items) {
@@ -211,12 +271,37 @@ cJSON *recipeJson(const RecipeConfig &recipe) {
         !cJSON_AddItemToArray(items, itemJson)) {
       cJSON_Delete(itemJson);
       cJSON_Delete(items);
+      cJSON_Delete(steps);
       cJSON_Delete(json);
       return nullptr;
     }
   }
 
+  cJSON_AddItemToObject(json, "preparationSteps", steps);
   cJSON_AddItemToObject(json, "items", items);
+
+  cJSON *availabilityJson = cJSON_CreateObject();
+  cJSON *missing = cJSON_CreateArray();
+  cJSON *uncalibrated = cJSON_CreateArray();
+  if (!availabilityJson || !missing || !uncalibrated ||
+      !cJSON_AddBoolToObject(availabilityJson, "available",
+                            availability.available)) {
+    cJSON_Delete(availabilityJson);
+    cJSON_Delete(missing);
+    cJSON_Delete(uncalibrated);
+    cJSON_Delete(json);
+    return nullptr;
+  }
+  for (std::uint16_t id : availability.missingIngredientIds) {
+    cJSON_AddItemToArray(missing, cJSON_CreateNumber(id));
+  }
+  for (std::uint16_t id : availability.uncalibratedIngredientIds) {
+    cJSON_AddItemToArray(uncalibrated, cJSON_CreateNumber(id));
+  }
+  cJSON_AddItemToObject(availabilityJson, "missingIngredientIds", missing);
+  cJSON_AddItemToObject(availabilityJson, "uncalibratedIngredientIds",
+                       uncalibrated);
+  cJSON_AddItemToObject(json, "availability", availabilityJson);
   return json;
 }
 
@@ -262,15 +347,85 @@ cJSON *bottleJson(const BottleState &bottle) {
   return json;
 }
 
+cJSON *systemStatusJson(const SystemStatus &status) {
+  cJSON *root = cJSON_CreateObject();
+  cJSON *memory = cJSON_CreateObject();
+  cJSON *cpu = cJSON_CreateObject();
+  cJSON *storage = cJSON_CreateObject();
+  cJSON *network = cJSON_CreateObject();
+  if (!root || !memory || !cpu || !storage || !network) {
+    cJSON_Delete(root);
+    cJSON_Delete(memory);
+    cJSON_Delete(cpu);
+    cJSON_Delete(storage);
+    cJSON_Delete(network);
+    return nullptr;
+  }
+  cJSON_AddNumberToObject(root, "uptimeMs", status.uptimeMs);
+  cJSON_AddNumberToObject(memory, "freeHeapBytes", status.freeHeapBytes);
+  cJSON_AddNumberToObject(memory, "minimumFreeHeapBytes",
+                         status.minimumFreeHeapBytes);
+  cJSON_AddNumberToObject(memory, "largestFreeBlockBytes",
+                         status.largestFreeBlockBytes);
+  cJSON_AddNumberToObject(cpu, "utilizationPercent",
+                         status.cpuUtilizationPercent);
+  const auto addStorage = [storage](const char *name,
+                                    const StorageUsage &usage) {
+    cJSON *value = cJSON_CreateObject();
+    if (!value) return false;
+    cJSON_AddNumberToObject(value, "totalBytes", usage.totalBytes);
+    cJSON_AddNumberToObject(value, "usedBytes", usage.usedBytes);
+    cJSON_AddItemToObject(storage, name, value);
+    return true;
+  };
+  if (!addStorage("firmware", status.firmware) ||
+      !addStorage("frontend", status.webStorage) ||
+      !addStorage("configuration", status.configurationStorage) ||
+      !addStorage("media", status.mediaStorage)) {
+    cJSON_Delete(root);
+    cJSON_Delete(memory);
+    cJSON_Delete(cpu);
+    cJSON_Delete(storage);
+    cJSON_Delete(network);
+    return nullptr;
+  }
+  cJSON_AddStringToObject(network, "mode", status.wifiMode.c_str());
+  cJSON_AddBoolToObject(network, "stationConnected",
+                       status.stationConnected);
+  if (status.stationConnected) cJSON_AddNumberToObject(network, "rssi", status.rssi);
+  else cJSON_AddNullToObject(network, "rssi");
+  cJSON_AddBoolToObject(network, "accessPointActive",
+                       status.accessPointActive);
+  cJSON_AddItemToObject(root, "memory", memory);
+  cJSON_AddItemToObject(root, "cpu", cpu);
+  cJSON_AddItemToObject(root, "storage", storage);
+  cJSON_AddItemToObject(root, "network", network);
+  return root;
+}
+
 bool readRecipeFields(const cJSON *json, std::string &name,
                       std::optional<std::string> &imageKey,
+                      std::optional<std::string> &subtitle,
+                      std::optional<std::string> &description,
+                      std::uint16_t &baseSizeMl,
+                      std::vector<PreparationStep> &preparationSteps,
                       std::vector<RecipeItem> &items) {
   const cJSON *nameJson = cJSON_GetObjectItemCaseSensitive(json, "name");
   const cJSON *imageKeyJson =
       cJSON_GetObjectItemCaseSensitive(json, "imageKey");
   const cJSON *itemsJson = cJSON_GetObjectItemCaseSensitive(json, "items");
+  const cJSON *subtitleJson =
+      cJSON_GetObjectItemCaseSensitive(json, "subtitle");
+  const cJSON *descriptionJson =
+      cJSON_GetObjectItemCaseSensitive(json, "description");
+  const cJSON *baseSizeJson =
+      cJSON_GetObjectItemCaseSensitive(json, "baseSizeMl");
+  const cJSON *stepsJson =
+      cJSON_GetObjectItemCaseSensitive(json, "preparationSteps");
   if (!cJSON_IsString(nameJson) || nameJson->valuestring == nullptr ||
-      nameJson->valuestring[0] == '\0' || !cJSON_IsArray(itemsJson)) {
+      nameJson->valuestring[0] == '\0' || !cJSON_IsArray(itemsJson) ||
+      !readUnsigned(baseSizeJson, baseSizeMl) || baseSizeMl == 0 ||
+      !cJSON_IsArray(stepsJson)) {
     return false;
   }
 
@@ -281,6 +436,38 @@ bool readRecipeFields(const cJSON *json, std::string &name,
       return false;
     }
     imageKey = imageKeyJson->valuestring;
+  }
+
+  const auto readOptionalString = [](const cJSON *value,
+                                     std::optional<std::string> &result) {
+    result.reset();
+    if (!value || cJSON_IsNull(value)) return true;
+    if (!cJSON_IsString(value) || !value->valuestring) return false;
+    result = value->valuestring;
+    return true;
+  };
+  if (!readOptionalString(subtitleJson, subtitle) ||
+      !readOptionalString(descriptionJson, description)) {
+    return false;
+  }
+
+  preparationSteps.clear();
+  cJSON *stepJson = nullptr;
+  cJSON_ArrayForEach(stepJson, stepsJson) {
+    const cJSON *phase =
+        cJSON_GetObjectItemCaseSensitive(stepJson, "phase");
+    const cJSON *text = cJSON_GetObjectItemCaseSensitive(stepJson, "text");
+    if (!cJSON_IsObject(stepJson) || !cJSON_IsString(phase) ||
+        !phase->valuestring || !cJSON_IsString(text) || !text->valuestring ||
+        text->valuestring[0] == '\0') {
+      return false;
+    }
+    const std::string phaseName = phase->valuestring;
+    if (phaseName != "BEFORE" && phaseName != "AFTER") return false;
+    preparationSteps.push_back({
+        .phase = phaseName == "BEFORE" ? PreparationPhase::BEFORE
+                                       : PreparationPhase::AFTER,
+        .text = text->valuestring});
   }
   items.clear();
   cJSON *itemJson = nullptr;
@@ -353,12 +540,15 @@ API::API(MachineLogic &machineLogic, PumpControl &pumpControl,
          RecipeConfigRepository &recipeRepository,
          IngredientConfigRepository &ingredientRepository,
          PumpConfigRepository &pumpRepository,
-         BottleStateRepository &bottleStateRepository)
+         BottleStateRepository &bottleStateRepository,
+         MediaStorage &mediaStorage, SystemMonitor &systemMonitor,
+         DeveloperControl &developerControl)
     : machineLogic_(machineLogic), pumpControl_(pumpControl),
       wifiController_(wifiController), recipeRepository_(recipeRepository),
       ingredientRepository_(ingredientRepository),
       pumpRepository_(pumpRepository),
-      bottleStateRepository_(bottleStateRepository) {}
+      bottleStateRepository_(bottleStateRepository), mediaStorage_(mediaStorage),
+      systemMonitor_(systemMonitor), developerControl_(developerControl) {}
 
 esp_err_t API::start() {
   esp_err_t result = mountWebFileSystem();
@@ -366,9 +556,12 @@ esp_err_t API::start() {
     return result;
   }
 
+  systemMonitor_.setUpdateCallback(
+      [this](const SystemStatus &status) { handleSystemStatus(status); });
+
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.uri_match_fn = httpd_uri_match_wildcard;
-  config.max_uri_handlers = 40;
+  config.max_uri_handlers = 48;
 
   result = httpd_start(&server_, &config);
 
@@ -408,6 +601,7 @@ esp_err_t API::start() {
 void API::stop() {
   wifiController_.setScanFinishedCallback({});
   machineLogic_.setEventCallback({});
+  systemMonitor_.setUpdateCallback({});
 
   if (server_ != nullptr) {
     httpd_stop(server_);
@@ -501,6 +695,12 @@ esp_err_t API::registerRoutes() {
       RouteDefinition{"/api/network/status", HTTP_GET, &API::networkHandler},
       RouteDefinition{"/api/network/scan", HTTP_POST, &API::networkHandler},
       RouteDefinition{"/api/network/connect", HTTP_POST, &API::networkHandler},
+      RouteDefinition{"/api/network/disconnect", HTTP_POST,
+                      &API::networkHandler},
+      RouteDefinition{"/api/network/reconnect", HTTP_POST,
+                      &API::networkHandler},
+      RouteDefinition{"/api/network/connection", HTTP_DELETE,
+                      &API::networkHandler},
       RouteDefinition{"/api/device", HTTP_GET, &API::deviceHandler},
       RouteDefinition{"/api/device/restart", HTTP_POST, &API::deviceHandler},
       RouteDefinition{"/api/settings/device", HTTP_GET,
@@ -510,6 +710,20 @@ esp_err_t API::registerRoutes() {
       RouteDefinition{"/api/bottles", HTTP_GET, &API::bottlesHandler},
       RouteDefinition{"/api/bottles/*", HTTP_GET, &API::bottlesHandler},
       RouteDefinition{"/api/bottles/*", HTTP_PUT, &API::bottlesHandler},
+      RouteDefinition{"/api/media/images", HTTP_POST, &API::mediaHandler},
+      RouteDefinition{"/api/media/images/*", HTTP_GET, &API::mediaHandler},
+      RouteDefinition{"/api/media/images/*", HTTP_DELETE, &API::mediaHandler},
+      RouteDefinition{"/api/system/status", HTTP_GET, &API::systemHandler},
+      RouteDefinition{"/api/developer/status", HTTP_GET,
+                      &API::developerHandler},
+      RouteDefinition{"/api/developer/pumps/*", HTTP_POST,
+                      &API::developerHandler},
+      RouteDefinition{"/api/developer/leds/*", HTTP_PUT,
+                      &API::developerHandler},
+      RouteDefinition{"/api/developer/leds/reset", HTTP_POST,
+                      &API::developerHandler},
+      RouteDefinition{"/api/developer/buzzer/*", HTTP_POST,
+                      &API::developerHandler},
   };
 
   for (const RouteDefinition &route : routes) {
@@ -631,6 +845,9 @@ esp_err_t API::handleStatus(httpd_req_t *req) {
   case MachineOperationState::RUNNING:
     stateText = "running";
     break;
+  case MachineOperationState::PAUSED:
+    stateText = "paused";
+    break;
   case MachineOperationState::FINISHED:
     stateText = "finished";
     break;
@@ -643,7 +860,9 @@ esp_err_t API::handleStatus(httpd_req_t *req) {
 
   JsonPtr json(cJSON_CreateObject(), cJSON_Delete);
   if (!json || !cJSON_AddStringToObject(json.get(), "state", stateText) ||
-      !cJSON_AddNumberToObject(json.get(), "progress", status.progress)) {
+      !cJSON_AddNumberToObject(json.get(), "progress", status.progress) ||
+      !cJSON_AddBoolToObject(json.get(), "glassPresent",
+                            status.glassPresent)) {
     return sendError(req, "500 Internal Server Error", "json_failed");
   }
 
@@ -664,6 +883,20 @@ esp_err_t API::handleStatus(httpd_req_t *req) {
   if (!status.label.empty()) {
     cJSON_AddStringToObject(json.get(), "label", status.label.c_str());
   }
+  cJSON *completedIngredients = cJSON_CreateArray();
+  if (!completedIngredients) {
+    return sendError(req, "500 Internal Server Error", "json_failed");
+  }
+  for (const std::uint16_t ingredientId : status.completedIngredientIds) {
+    cJSON *id = cJSON_CreateNumber(ingredientId);
+    if (!id || !cJSON_AddItemToArray(completedIngredients, id)) {
+      cJSON_Delete(id);
+      cJSON_Delete(completedIngredients);
+      return sendError(req, "500 Internal Server Error", "json_failed");
+    }
+  }
+  cJSON_AddItemToObject(json.get(), "completedIngredientIds",
+                        completedIngredients);
   return sendJson(req, json.get());
 }
 
@@ -673,11 +906,15 @@ esp_err_t API::recipesHandler(httpd_req_t *req) {
 
 esp_err_t API::handleRecipes(httpd_req_t *req) {
   const std::string path = requestPath(req);
+  const auto serializeRecipe = [this](const RecipeConfig &recipe) {
+    return recipeJson(recipe, machineLogic_.getRecipeAvailability(recipe),
+                      machineLogic_.isStrengthAdjustmentAvailable(recipe));
+  };
   if (path == "/api/recipes") {
     if (req->method == HTTP_GET) {
       JsonPtr array(cJSON_CreateArray(), cJSON_Delete);
       for (const RecipeConfig &recipe : recipeRepository_.loadAll()) {
-        cJSON *item = recipeJson(recipe);
+        cJSON *item = serializeRecipe(recipe);
         if (!item || !cJSON_AddItemToArray(array.get(), item)) {
           cJSON_Delete(item);
           return sendError(req, "500 Internal Server Error", "json_failed");
@@ -689,16 +926,24 @@ esp_err_t API::handleRecipes(httpd_req_t *req) {
     JsonPtr body = readJsonBody(req);
     std::string name;
     std::optional<std::string> imageKey;
+    std::optional<std::string> subtitle;
+    std::optional<std::string> description;
+    std::uint16_t baseSizeMl = 0;
+    std::vector<PreparationStep> preparationSteps;
     std::vector<RecipeItem> items;
-    if (!body || !readRecipeFields(body.get(), name, imageKey, items)) {
+    if (!body || !readRecipeFields(body.get(), name, imageKey, subtitle,
+                                   description, baseSizeMl, preparationSteps,
+                                   items)) {
       return sendError(req, "400 Bad Request", "invalid_recipe");
     }
     const std::optional<RecipeConfig> created =
-        recipeRepository_.create(name, items, std::move(imageKey));
+        recipeRepository_.create(name, items, std::move(imageKey),
+                                 std::move(subtitle), std::move(description),
+                                 baseSizeMl, std::move(preparationSteps));
     if (!created) {
       return sendError(req, "500 Internal Server Error", "storage_failed");
     }
-    JsonPtr json(recipeJson(*created), cJSON_Delete);
+    JsonPtr json(serializeRecipe(*created), cJSON_Delete);
     return sendJson(req, json.get(), "201 Created");
   }
 
@@ -715,8 +960,33 @@ esp_err_t API::handleRecipes(httpd_req_t *req) {
     }
     const cJSON *overridesJson =
         cJSON_GetObjectItemCaseSensitive(body.get(), "overrides");
+    const cJSON *sizeJson =
+        cJSON_GetObjectItemCaseSensitive(body.get(), "sizeMl");
+    const cJSON *strengthJson =
+        cJSON_GetObjectItemCaseSensitive(body.get(), "strength");
+    const cJSON *ignoreGlassJson =
+        cJSON_GetObjectItemCaseSensitive(body.get(), "ignoreGlass");
+    std::uint16_t sizeMl = 0;
+    if (!readUnsigned(sizeJson, sizeMl) || sizeMl == 0) {
+      return sendError(req, "400 Bad Request", "invalid_size");
+    }
+    if (!cJSON_IsString(strengthJson) || !strengthJson->valuestring) {
+      return sendError(req, "400 Bad Request", "invalid_strength");
+    }
     if (overridesJson && !cJSON_IsArray(overridesJson)) {
       return sendError(req, "400 Bad Request", "invalid_overrides");
+    }
+    if (ignoreGlassJson && !cJSON_IsBool(ignoreGlassJson)) {
+      return sendError(req, "400 Bad Request", "invalid_glass_override");
+    }
+    DrinkStrength strength = DrinkStrength::STANDARD;
+    const std::string strengthName = strengthJson->valuestring;
+    if (strengthName == "less") {
+      strength = DrinkStrength::LESS;
+    } else if (strengthName == "more") {
+      strength = DrinkStrength::MORE;
+    } else if (strengthName != "standard") {
+      return sendError(req, "400 Bad Request", "invalid_strength");
     }
 
     std::vector<RecipeItem> overrides;
@@ -734,7 +1004,9 @@ esp_err_t API::handleRecipes(httpd_req_t *req) {
       overrides.push_back(item);
     }
 
-    const StartRecipeResult result = machineLogic_.startRecipe(id, overrides);
+    const StartRecipeResult result =
+        machineLogic_.startRecipe(id, sizeMl, strength, overrides,
+                                  cJSON_IsTrue(ignoreGlassJson));
     if (result != StartRecipeResult::SUCCESS) {
       if (result == StartRecipeResult::RECIPE_NOT_FOUND) {
         return sendError(req, "404 Not Found", "recipe_not_found");
@@ -747,6 +1019,12 @@ esp_err_t API::handleRecipes(httpd_req_t *req) {
       }
       if (result == StartRecipeResult::INVALID_OVERRIDE) {
         return sendError(req, "400 Bad Request", "invalid_overrides");
+      }
+      if (result == StartRecipeResult::INVALID_SIZE) {
+        return sendError(req, "400 Bad Request", "invalid_size");
+      }
+      if (result == StartRecipeResult::STRENGTH_NOT_SUPPORTED) {
+        return sendError(req, "409 Conflict", "strength_not_supported");
       }
       if (result == StartRecipeResult::MACHINE_BUSY) {
         return sendError(req, "409 Conflict", "machine_busy");
@@ -767,7 +1045,7 @@ esp_err_t API::handleRecipes(httpd_req_t *req) {
     return sendError(req, "404 Not Found", "recipe_not_found");
   }
   if (req->method == HTTP_GET) {
-    JsonPtr json(recipeJson(*existing), cJSON_Delete);
+    JsonPtr json(serializeRecipe(*existing), cJSON_Delete);
     return sendJson(req, json.get());
   }
   if (req->method == HTTP_DELETE) {
@@ -777,8 +1055,17 @@ esp_err_t API::handleRecipes(httpd_req_t *req) {
   }
 
   JsonPtr body = readJsonBody(req);
-  RecipeConfig updated{.id = id, .name = {}, .imageKey = {}, .items = {}};
+  RecipeConfig updated{.id = id,
+                       .name = {},
+                       .imageKey = {},
+                       .subtitle = {},
+                       .description = {},
+                       .baseSizeMl = 0,
+                       .preparationSteps = {},
+                       .items = {}};
   if (!body || !readRecipeFields(body.get(), updated.name, updated.imageKey,
+                                 updated.subtitle, updated.description,
+                                 updated.baseSizeMl, updated.preparationSteps,
                                  updated.items)) {
     return sendError(req, "400 Bad Request", "invalid_recipe");
   }
@@ -810,11 +1097,15 @@ esp_err_t API::handleIngredients(httpd_req_t *req) {
     JsonPtr body = readJsonBody(req);
     const cJSON *name =
         body ? cJSON_GetObjectItemCaseSensitive(body.get(), "name") : nullptr;
-    if (!cJSON_IsString(name) || !name->valuestring || !name->valuestring[0]) {
+    const cJSON *categoryJson = body
+        ? cJSON_GetObjectItemCaseSensitive(body.get(), "category") : nullptr;
+    IngredientCategory category = IngredientCategory::OTHER;
+    if (!cJSON_IsString(name) || !name->valuestring || !name->valuestring[0] ||
+        !readIngredientCategory(categoryJson, category)) {
       return sendError(req, "400 Bad Request", "invalid_ingredient");
     }
     const std::optional<IngredientConfig> created =
-        ingredientRepository_.create(name->valuestring);
+        ingredientRepository_.create(name->valuestring, category);
     if (!created) {
       return sendError(req, "409 Conflict", "ingredient_not_created");
     }
@@ -846,10 +1137,15 @@ esp_err_t API::handleIngredients(httpd_req_t *req) {
   JsonPtr body = readJsonBody(req);
   const cJSON *name =
       body ? cJSON_GetObjectItemCaseSensitive(body.get(), "name") : nullptr;
-  if (!cJSON_IsString(name) || !name->valuestring || !name->valuestring[0]) {
+  const cJSON *categoryJson = body
+      ? cJSON_GetObjectItemCaseSensitive(body.get(), "category") : nullptr;
+  IngredientCategory category = IngredientCategory::OTHER;
+  if (!cJSON_IsString(name) || !name->valuestring || !name->valuestring[0] ||
+      !readIngredientCategory(categoryJson, category)) {
     return sendError(req, "400 Bad Request", "invalid_ingredient");
   }
-  const IngredientConfig updated{.id = id, .name = name->valuestring};
+  const IngredientConfig updated{
+      .id = id, .name = name->valuestring, .category = category};
   return ingredientRepository_.update(updated)
              ? sendNoContent(req)
              : sendError(req, "409 Conflict", "ingredient_not_updated");
@@ -1070,11 +1366,33 @@ esp_err_t API::operationHandler(httpd_req_t *req) {
 }
 
 esp_err_t API::handleOperation(httpd_req_t *req) {
-  if (requestPath(req) != "/api/operation/stop") {
-    return sendError(req, "404 Not Found", "route_not_found");
+  const std::string path = requestPath(req);
+  if (path == "/api/operation/stop") {
+    machineLogic_.stopCurrentOperation();
+    return sendNoContent(req);
   }
-  machineLogic_.stopCurrentOperation();
-  return sendNoContent(req);
+  if (path == "/api/operation/resume") {
+    JsonPtr body = readJsonBody(req);
+    const cJSON *ignoreGlass = body
+        ? cJSON_GetObjectItemCaseSensitive(body.get(), "ignoreGlass")
+        : nullptr;
+    if (ignoreGlass && !cJSON_IsBool(ignoreGlass)) {
+      return sendError(req, "400 Bad Request", "invalid_glass_override");
+    }
+    const MachineActionResult result =
+        machineLogic_.resumeCurrentOperation(cJSON_IsTrue(ignoreGlass));
+    if (result == MachineActionResult::SUCCESS) {
+      return sendNoContent(req);
+    }
+    if (result == MachineActionResult::GLASS_NOT_PRESENT) {
+      return sendError(req, "409 Conflict", "no_glass");
+    }
+    if (result == MachineActionResult::OPERATION_NOT_READY) {
+      return sendError(req, "409 Conflict", "operation_not_paused");
+    }
+    return sendError(req, "500 Internal Server Error", "resume_failed");
+  }
+  return sendError(req, "404 Not Found", "route_not_found");
 }
 
 esp_err_t API::deviceSettingsHandler(httpd_req_t *req) {
@@ -1089,11 +1407,25 @@ esp_err_t API::handleDeviceSettings(httpd_req_t *req) {
   if (req->method == HTTP_GET) {
     const DeviceSettings settings = machineLogic_.getDeviceSettings();
     JsonPtr json(cJSON_CreateObject(), cJSON_Delete);
+    cJSON *sizes = cJSON_CreateArray();
     if (!json || !cJSON_AddBoolToObject(
                      json.get(), "activateLedWhenPumpActive",
-                     settings.activateLedWhenPumpActive)) {
+                     settings.activateLedWhenPumpActive) ||
+        !cJSON_AddBoolToObject(json.get(), "requireGlassDetection",
+                              settings.requireGlassDetection) || !sizes ||
+        !cJSON_AddNumberToObject(json.get(), "defaultDrinkSizeMl",
+                                settings.defaultDrinkSizeMl) ||
+        !cJSON_AddNumberToObject(json.get(), "alcoholStrengthLessFactor",
+                                settings.alcoholStrengthLessFactor) ||
+        !cJSON_AddNumberToObject(json.get(), "alcoholStrengthMoreFactor",
+                                settings.alcoholStrengthMoreFactor)) {
+      cJSON_Delete(sizes);
       return sendError(req, "500 Internal Server Error", "json_failed");
     }
+    for (const std::uint16_t size : settings.drinkSizesMl) {
+      cJSON_AddItemToArray(sizes, cJSON_CreateNumber(size));
+    }
+    cJSON_AddItemToObject(json.get(), "drinkSizesMl", sizes);
     return sendJson(req, json.get());
   }
 
@@ -1102,12 +1434,52 @@ esp_err_t API::handleDeviceSettings(httpd_req_t *req) {
       body ? cJSON_GetObjectItemCaseSensitive(
                  body.get(), "activateLedWhenPumpActive")
            : nullptr;
-  if (!cJSON_IsBool(activateLed)) {
+  const cJSON *requireGlass = body
+      ? cJSON_GetObjectItemCaseSensitive(body.get(), "requireGlassDetection")
+      : nullptr;
+  const cJSON *sizesJson = body
+      ? cJSON_GetObjectItemCaseSensitive(body.get(), "drinkSizesMl") : nullptr;
+  const cJSON *defaultSizeJson = body
+      ? cJSON_GetObjectItemCaseSensitive(body.get(), "defaultDrinkSizeMl") : nullptr;
+  const cJSON *lessJson = body
+      ? cJSON_GetObjectItemCaseSensitive(body.get(), "alcoholStrengthLessFactor") : nullptr;
+  const cJSON *moreJson = body
+      ? cJSON_GetObjectItemCaseSensitive(body.get(), "alcoholStrengthMoreFactor") : nullptr;
+  std::uint16_t defaultSize = 0;
+  if (!cJSON_IsBool(activateLed) || !cJSON_IsBool(requireGlass) ||
+      !cJSON_IsArray(sizesJson) ||
+      cJSON_GetArraySize(sizesJson) <= 0 || cJSON_GetArraySize(sizesJson) > 16 ||
+      !readUnsigned(defaultSizeJson, defaultSize) ||
+      !cJSON_IsNumber(lessJson) || !cJSON_IsNumber(moreJson) ||
+      !std::isfinite(lessJson->valuedouble) ||
+      !std::isfinite(moreJson->valuedouble)) {
+    return sendError(req, "400 Bad Request", "invalid_device_settings");
+  }
+
+  std::vector<std::uint16_t> sizes;
+  cJSON *sizeJson = nullptr;
+  cJSON_ArrayForEach(sizeJson, sizesJson) {
+    std::uint16_t size = 0;
+    if (!readUnsigned(sizeJson, size) || size == 0) {
+      return sendError(req, "400 Bad Request", "invalid_device_settings");
+    }
+    sizes.push_back(size);
+  }
+  std::sort(sizes.begin(), sizes.end());
+  if (std::adjacent_find(sizes.begin(), sizes.end()) != sizes.end() ||
+      std::find(sizes.begin(), sizes.end(), defaultSize) == sizes.end() ||
+      lessJson->valuedouble <= 0.0 || lessJson->valuedouble >= 1.0 ||
+      moreJson->valuedouble <= 1.0) {
     return sendError(req, "400 Bad Request", "invalid_device_settings");
   }
 
   const DeviceSettings settings{
-      .activateLedWhenPumpActive = cJSON_IsTrue(activateLed) != 0};
+      .activateLedWhenPumpActive = cJSON_IsTrue(activateLed) != 0,
+      .requireGlassDetection = cJSON_IsTrue(requireGlass) != 0,
+      .drinkSizesMl = std::move(sizes),
+      .defaultDrinkSizeMl = defaultSize,
+      .alcoholStrengthLessFactor = static_cast<float>(lessJson->valuedouble),
+      .alcoholStrengthMoreFactor = static_cast<float>(moreJson->valuedouble)};
   return machineLogic_.updateDeviceSettings(settings)
              ? sendNoContent(req)
              : sendError(req, "500 Internal Server Error", "storage_failed");
@@ -1172,6 +1544,240 @@ esp_err_t API::handleBottles(httpd_req_t *req) {
              : sendError(req, "500 Internal Server Error", "storage_failed");
 }
 
+esp_err_t API::mediaHandler(httpd_req_t *req) {
+  return static_cast<API *>(req->user_ctx)->handleMedia(req);
+}
+
+esp_err_t API::handleMedia(httpd_req_t *req) {
+  const std::string path = requestPath(req);
+  if (path == "/api/media/images" && req->method == HTTP_POST) {
+    if (req->content_len <= 0 ||
+        static_cast<std::size_t>(req->content_len) >
+            MediaStorage::MAX_IMAGE_BYTES) {
+      return sendError(req, "413 Payload Too Large", "image_too_large");
+    }
+    char contentType[32] = {};
+    if (httpd_req_get_hdr_value_str(req, "Content-Type", contentType,
+                                    sizeof(contentType)) != ESP_OK ||
+        std::string_view(contentType).find("image/webp") != 0) {
+      return sendError(req, "415 Unsupported Media Type",
+                       "unsupported_image_type");
+    }
+    const MediaStorageInfo storage = mediaStorage_.info();
+    if (!mediaStorage_.ready() ||
+        storage.totalBytes - std::min(storage.totalBytes, storage.usedBytes) <
+            static_cast<std::size_t>(req->content_len)) {
+      return sendError(req, "507 Insufficient Storage", "media_storage_full");
+    }
+    std::string id;
+    do {
+      id = mediaStorage_.generateImageId();
+    } while (mediaStorage_.imageExists(id));
+
+    const bool stored = mediaStorage_.storeImage(
+        id, static_cast<std::size_t>(req->content_len),
+        [req](char *buffer, std::size_t size) {
+          int received = 0;
+          do {
+            received = httpd_req_recv(req, buffer, size);
+          } while (received == HTTPD_SOCK_ERR_TIMEOUT);
+          return received;
+        });
+    if (!stored) {
+      return sendError(req, "507 Insufficient Storage", "media_storage_full");
+    }
+    JsonPtr json(cJSON_CreateObject(), cJSON_Delete);
+    const std::string imageKey = "media:" + id;
+    if (!json || !cJSON_AddStringToObject(json.get(), "imageKey",
+                                         imageKey.c_str())) {
+      mediaStorage_.removeImage(id);
+      return sendError(req, "500 Internal Server Error", "json_failed");
+    }
+    return sendJson(req, json.get(), "201 Created");
+  }
+
+  std::string id;
+  if (path.starts_with("/api/media/images/")) {
+    id = path.substr(std::string_view("/api/media/images/").size());
+  }
+  if (!MediaStorage::validImageId(id)) {
+    return sendError(req, "400 Bad Request", "invalid_image_id");
+  }
+  if (!mediaStorage_.imageExists(id)) {
+    return sendError(req, "404 Not Found", "image_not_found");
+  }
+  if (req->method == HTTP_GET) {
+    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=31536000, immutable");
+    return sendFile(req, mediaStorage_.imagePath(id));
+  }
+
+  const std::string imageKey = "media:" + id;
+  const std::vector<RecipeConfig> recipes = recipeRepository_.loadAll();
+  const bool inUse = std::any_of(
+      recipes.begin(), recipes.end(),
+      [&imageKey](const RecipeConfig &recipe) {
+        return recipe.imageKey && *recipe.imageKey == imageKey;
+      });
+  if (inUse) {
+    return sendError(req, "409 Conflict", "image_in_use");
+  }
+  return mediaStorage_.removeImage(id)
+             ? sendNoContent(req)
+             : sendError(req, "500 Internal Server Error", "media_delete_failed");
+}
+
+esp_err_t API::systemHandler(httpd_req_t *req) {
+  return static_cast<API *>(req->user_ctx)->handleSystem(req);
+}
+
+esp_err_t API::handleSystem(httpd_req_t *req) {
+  if (requestPath(req) != "/api/system/status") {
+    return sendError(req, "404 Not Found", "route_not_found");
+  }
+  JsonPtr json(systemStatusJson(systemMonitor_.status()), cJSON_Delete);
+  return sendJson(req, json.get());
+}
+
+void API::handleSystemStatus(const SystemStatus &status) {
+  JsonPtr root(cJSON_CreateObject(), cJSON_Delete);
+  cJSON *statusJson = systemStatusJson(status);
+  if (!root || !statusJson ||
+      !cJSON_AddStringToObject(root.get(), "type", "system_status")) {
+    cJSON_Delete(statusJson);
+    return;
+  }
+  cJSON_AddItemToObject(root.get(), "status", statusJson);
+  JsonStringPtr text(cJSON_PrintUnformatted(root.get()), cJSON_free);
+  if (text) sendWebSocketMessage(text.get());
+}
+
+esp_err_t API::developerHandler(httpd_req_t *req) {
+  return static_cast<API *>(req->user_ctx)->handleDeveloper(req);
+}
+
+esp_err_t API::handleDeveloper(httpd_req_t *req) {
+  const std::string path = requestPath(req);
+  if (path == "/api/developer/status" && req->method == HTTP_GET) {
+    const MachineStatus machine = machineLogic_.getStatus();
+    const auto stateName = [&machine]() {
+      switch (machine.state) {
+      case MachineOperationState::RUNNING: return "running";
+      case MachineOperationState::PAUSED: return "paused";
+      case MachineOperationState::FINISHED: return "finished";
+      case MachineOperationState::STOPPED: return "stopped";
+      case MachineOperationState::IDLE: return "idle";
+      }
+      return "idle";
+    };
+    const char *kind = "none";
+    if (machine.kind == MachineOperationKind::DRINK) kind = "drink";
+    else if (machine.kind == MachineOperationKind::CLEANING) kind = "cleaning";
+    else if (machine.kind == MachineOperationKind::CALIBRATION) kind = "calibration";
+
+    JsonPtr root(cJSON_CreateObject(), cJSON_Delete);
+    cJSON *machineJson = cJSON_CreateObject();
+    cJSON *pumpsJson = cJSON_CreateArray();
+    cJSON *bottlesJson = cJSON_CreateArray();
+    if (!root || !machineJson || !pumpsJson || !bottlesJson) {
+      cJSON_Delete(machineJson);
+      cJSON_Delete(pumpsJson);
+      cJSON_Delete(bottlesJson);
+      return sendError(req, "500 Internal Server Error", "json_failed");
+    }
+    cJSON_AddBoolToObject(root.get(), "glassPresent",
+                         developerControl_.glassPresent());
+    cJSON_AddStringToObject(machineJson, "kind", kind);
+    cJSON_AddStringToObject(machineJson, "state", stateName());
+    cJSON_AddBoolToObject(
+        machineJson, "busy",
+        machine.state == MachineOperationState::RUNNING ||
+            machine.state == MachineOperationState::PAUSED ||
+            (machine.kind == MachineOperationKind::CALIBRATION &&
+             machine.state == MachineOperationState::FINISHED));
+    cJSON_AddItemToObject(root.get(), "machine", machineJson);
+    for (const PumpConfig &pump : pumpRepository_.loadAll()) {
+      cJSON *value = pumpJson(pump);
+      if (!value) return sendError(req, "500 Internal Server Error", "json_failed");
+      cJSON_AddBoolToObject(value, "running",
+                           pumpControl_.isPumpRunning(pump.id));
+      cJSON_AddItemToArray(pumpsJson, value);
+    }
+    for (const BottleState &bottle : bottleStateRepository_.loadAll()) {
+      cJSON_AddItemToArray(bottlesJson, bottleJson(bottle));
+    }
+    cJSON_AddItemToObject(root.get(), "pumps", pumpsJson);
+    cJSON_AddItemToObject(root.get(), "bottles", bottlesJson);
+    return sendJson(req, root.get());
+  }
+
+  const auto resultResponse = [req](DeveloperResult result) {
+    if (result == DeveloperResult::SUCCESS) return sendNoContent(req);
+    if (result == DeveloperResult::MACHINE_BUSY)
+      return sendError(req, "409 Conflict", "machine_busy");
+    if (result == DeveloperResult::PUMP_NOT_FOUND)
+      return sendError(req, "404 Not Found", "pump_not_found");
+    return sendError(req, "400 Bad Request", "invalid_duration");
+  };
+
+  if (path == "/api/developer/pumps/stop") {
+    developerControl_.stopAllPumps();
+    return sendNoContent(req);
+  }
+  std::uint8_t pumpId = 0;
+  std::string suffix;
+  if (readIdFromPath(path, "/api/developer/pumps/", pumpId, suffix)) {
+    if (suffix == "/stop") {
+      return resultResponse(developerControl_.stopPump(pumpId));
+    }
+    if (suffix == "/test") {
+      JsonPtr body = readJsonBody(req);
+      std::uint32_t durationMs = 0;
+      if (!body || !readUnsigned(
+                       cJSON_GetObjectItemCaseSensitive(body.get(), "durationMs"),
+                       durationMs)) {
+        return sendError(req, "400 Bad Request", "invalid_duration");
+      }
+      return resultResponse(developerControl_.testPump(pumpId, durationMs));
+    }
+  }
+
+  if (path == "/api/developer/leds/reset") {
+    developerControl_.resetPumpLeds();
+    return sendNoContent(req);
+  }
+  if (readIdFromPath(path, "/api/developer/leds/", pumpId, suffix) &&
+      suffix.empty()) {
+    JsonPtr body = readJsonBody(req);
+    const cJSON *state = body
+        ? cJSON_GetObjectItemCaseSensitive(body.get(), "state") : nullptr;
+    if (!cJSON_IsBool(state)) {
+      return sendError(req, "400 Bad Request", "invalid_led_state");
+    }
+    return developerControl_.setPumpLed(pumpId, cJSON_IsTrue(state))
+               ? sendNoContent(req)
+               : sendError(req, "404 Not Found", "pump_not_found");
+  }
+
+  if (path == "/api/developer/buzzer/stop") {
+    developerControl_.stopBuzzer();
+    return sendNoContent(req);
+  }
+  if (path == "/api/developer/buzzer/test") {
+    JsonPtr body = readJsonBody(req);
+    const cJSON *melody = body
+        ? cJSON_GetObjectItemCaseSensitive(body.get(), "melody") : nullptr;
+    if (!cJSON_IsString(melody) || !melody->valuestring) {
+      return sendError(req, "400 Bad Request", "invalid_melody");
+    }
+    const std::string value = melody->valuestring;
+    if (value == "success") developerControl_.playSuccess();
+    else if (value == "error") developerControl_.playError();
+    else return sendError(req, "400 Bad Request", "invalid_melody");
+    return sendNoContent(req);
+  }
+  return sendError(req, "404 Not Found", "route_not_found");
+}
+
 esp_err_t API::networkHandler(httpd_req_t *req) {
   return static_cast<API *>(req->user_ctx)->handleNetwork(req);
 }
@@ -1198,6 +1804,22 @@ esp_err_t API::handleNetwork(httpd_req_t *req) {
                ? sendNoContent(req)
                : sendError(req, "500 Internal Server Error", "connect_failed");
   }
+  if (path == "/api/network/connection") {
+    return wifiController_.forgetNetwork() == ESP_OK
+               ? sendNoContent(req)
+               : sendError(req, "500 Internal Server Error", "forget_failed");
+  }
+  if (path == "/api/network/disconnect") {
+    return wifiController_.disconnect() == ESP_OK
+               ? sendNoContent(req)
+               : sendError(req, "500 Internal Server Error",
+                           "disconnect_failed");
+  }
+  if (path == "/api/network/reconnect") {
+    return wifiController_.reconnect() == ESP_OK
+               ? sendNoContent(req)
+               : sendError(req, "409 Conflict", "no_saved_network");
+  }
   if (path != "/api/network/status") {
     return sendError(req, "404 Not Found", "route_not_found");
   }
@@ -1218,6 +1840,8 @@ esp_err_t API::handleNetwork(httpd_req_t *req) {
   }
   cJSON_AddStringToObject(json.get(), "accessPoint",
                           wifiController_.getAccessPointSsid().c_str());
+  cJSON_AddStringToObject(json.get(), "accessPointPassword",
+                          wifiController_.getAccessPointPassword().c_str());
 
   char address[16] = {};
   esp_netif_t *station = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");

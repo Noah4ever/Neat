@@ -5,13 +5,16 @@
 #include <string>
 
 #include "bottle/BottleStateRepository.hpp"
+#include "developer/DeveloperControl.hpp"
 #include "esp_err.h"
 #include "esp_http_server.h"
 #include "machine/MachineLogic.hpp"
+#include "media/MediaStorage.hpp"
 #include "pump/PumpControl.hpp"
 #include "storage/IngredientConfigRepository.hpp"
 #include "storage/PumpConfigRepository.hpp"
 #include "storage/RecipeConfigRepository.hpp"
+#include "system/SystemMonitor.hpp"
 #include "wifi/WiFiController.hpp"
 #include "wifi/WiFiNetwork.hpp"
 
@@ -21,7 +24,9 @@ public:
       WiFiController &wifiController, RecipeConfigRepository &recipeRepository,
       IngredientConfigRepository &ingredientRepository,
       PumpConfigRepository &pumpRepository,
-      BottleStateRepository &bottleStateRepository);
+      BottleStateRepository &bottleStateRepository,
+      MediaStorage &mediaStorage, SystemMonitor &systemMonitor,
+      DeveloperControl &developerControl);
   esp_err_t start();
   void stop();
 
@@ -35,6 +40,9 @@ private:
   IngredientConfigRepository &ingredientRepository_;
   PumpConfigRepository &pumpRepository_;
   BottleStateRepository &bottleStateRepository_;
+  MediaStorage &mediaStorage_;
+  SystemMonitor &systemMonitor_;
+  DeveloperControl &developerControl_;
 
   httpd_handle_t server_ = nullptr;
   bool webFileSystemMounted_ = false;
@@ -84,6 +92,16 @@ private:
 
   static esp_err_t bottlesHandler(httpd_req_t *req);
   esp_err_t handleBottles(httpd_req_t *req);
+
+  static esp_err_t mediaHandler(httpd_req_t *req);
+  esp_err_t handleMedia(httpd_req_t *req);
+
+  static esp_err_t systemHandler(httpd_req_t *req);
+  esp_err_t handleSystem(httpd_req_t *req);
+  void handleSystemStatus(const SystemStatus &status);
+
+  static esp_err_t developerHandler(httpd_req_t *req);
+  esp_err_t handleDeveloper(httpd_req_t *req);
 
   esp_err_t handleNetworkScan(httpd_req_t *req);
 

@@ -12,6 +12,13 @@ export const cocktailImages: Record<string, string> = {
   "strawberry-mojito": "/drinks/strawberry-mojito.webp",
 };
 
+import { getMockMedia } from "../services/mockMedia";
+
 export function cocktailImageFor(imageKey: string | null | undefined) {
-  return imageKey ? cocktailImages[imageKey] : undefined;
+  if (!imageKey) return undefined;
+  if (imageKey.startsWith("media:")) {
+    const id = imageKey.slice(6);
+    return getMockMedia(id) ?? `/api/media/images/${id}`;
+  }
+  return cocktailImages[imageKey];
 }

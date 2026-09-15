@@ -8,8 +8,10 @@ export const DrinkSessionContext = createContext<{
   status: OperationStatus | undefined;
   busy: boolean;
   stopping: boolean;
+  resuming: boolean;
   start: (cocktail: Cocktail, request: MakeDrinkRequest) => Promise<void>;
   stop: () => Promise<void>;
+  resume: (ignoreGlass?: boolean) => Promise<void>;
 } | null>(null);
 export function useDrinkSession() {
   const value = useContext(DrinkSessionContext);

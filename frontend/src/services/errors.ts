@@ -5,7 +5,16 @@ export type BackendErrorKey =
   | "pump_not_calibrated"
   | "machine_busy"
   | "start_failed"
-  | "recipe_not_found";
+  | "recipe_not_found"
+  | "strength_not_supported"
+  | "invalid_size"
+  | "image_in_use"
+  | "media_storage_full"
+  | "image_too_large"
+  | "unsupported_image_type"
+  | "no_saved_network"
+  | "disconnect_failed"
+  | "invalid_device_settings";
 
 export interface UserMessage {
   title: string;
@@ -15,11 +24,11 @@ export interface UserMessage {
 export const backendErrorMessages: Record<BackendErrorKey, UserMessage> = {
   no_glass: {
     title: "No glass detected",
-    message: "Place a glass under the dispenser and try again.",
+    message: "Place glass and retry.",
   },
   glass_removed: {
     title: "Glass removed",
-    message: "Preparation was stopped because the glass was removed.",
+    message: "Preparation is paused. Put the glass back to continue.",
   },
   ingredient_not_available: {
     title: "Ingredient unavailable",
@@ -40,6 +49,42 @@ export const backendErrorMessages: Record<BackendErrorKey, UserMessage> = {
   recipe_not_found: {
     title: "Recipe unavailable",
     message: "This recipe no longer exists on the machine.",
+  },
+  strength_not_supported: {
+    title: "Strength cannot be adjusted",
+    message: "Check that at least one ingredient is categorized as alcohol.",
+  },
+  invalid_size: {
+    title: "Drink size unavailable",
+    message: "Choose one of the sizes configured for this machine.",
+  },
+  image_in_use: {
+    title: "Image is still in use",
+    message: "Remove the image from its recipe before deleting it.",
+  },
+  media_storage_full: {
+    title: "Image storage is full",
+    message: "Remove an unused uploaded image before trying again.",
+  },
+  image_too_large: {
+    title: "Image is too large",
+    message: "Choose a smaller image and try again.",
+  },
+  unsupported_image_type: {
+    title: "Image format unsupported",
+    message: "Choose an image that this browser can open.",
+  },
+  no_saved_network: {
+    title: "No saved network",
+    message: "Choose a Wi-Fi network to connect Neat.",
+  },
+  disconnect_failed: {
+    title: "Could not disconnect",
+    message: "Neat could not leave the current Wi-Fi network.",
+  },
+  invalid_device_settings: {
+    title: "Settings are not valid",
+    message: "Check the sizes, default size and strength values.",
   },
 };
 

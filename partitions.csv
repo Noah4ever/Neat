@@ -8,3 +8,4 @@ ota_1,     app,  ota_1,   0x2A0000, 0x280000,
 
 storage,   data, spiffs,  0x520000, 0x100000,
 web,       data, spiffs,  0x620000, 0x100000,
+media,     data, spiffs,  0x720000, 0x0E0000,

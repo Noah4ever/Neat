@@ -25,6 +25,33 @@ bool isUint16(const cJSON* value)
         && std::floor(value->valuedouble) == value->valuedouble;
 }
 
+const char* categoryName(IngredientCategory category)
+{
+    switch (category) {
+    case IngredientCategory::ALCOHOL: return "ALCOHOL";
+    case IngredientCategory::JUICE: return "JUICE";
+    case IngredientCategory::MIXER: return "MIXER";
+    case IngredientCategory::SYRUP: return "SYRUP";
+    case IngredientCategory::OTHER: return "OTHER";
+    }
+    return "OTHER";
+}
+
+bool readCategory(const cJSON* value, IngredientCategory& category)
+{
+    category = IngredientCategory::OTHER;
+    if (!value || cJSON_IsNull(value)) return true;
+    if (!cJSON_IsString(value) || !value->valuestring) return false;
+    const std::string name = value->valuestring;
+    if (name == "ALCOHOL") category = IngredientCategory::ALCOHOL;
+    else if (name == "JUICE") category = IngredientCategory::JUICE;
+    else if (name == "MIXER") category = IngredientCategory::MIXER;
+    else if (name == "SYRUP") category = IngredientCategory::SYRUP;
+    else if (name == "OTHER") category = IngredientCategory::OTHER;
+    else return false;
+    return true;
+}
+
 } // namespace
 
 IngredientConfigRepository::IngredientConfigRepository()
@@ -57,7 +84,8 @@ std::optional<IngredientConfig> IngredientConfigRepository::findById(std::uint16
         : std::optional<IngredientConfig>{*config};
 }
 
-std::optional<IngredientConfig> IngredientConfigRepository::create(const std::string& name)
+std::optional<IngredientConfig> IngredientConfigRepository::create(
+    const std::string& name, IngredientCategory category)
 {
     std::vector<IngredientConfig> configs;
     if (!readAll(configs)) {
@@ -77,7 +105,7 @@ std::optional<IngredientConfig> IngredientConfigRepository::create(const std::st
         return std::nullopt;
     }
 
-    IngredientConfig config{.id = id, .name = name};
+    IngredientConfig config{.id = id, .name = name, .category = category};
     configs.push_back(config);
     if (!saveAll(configs)) {
         return std::nullopt;
@@ -178,6 +206,7 @@ bool IngredientConfigRepository::serialize(
 
         if (cJSON_AddNumberToObject(item, "id", config.id) == nullptr
             || cJSON_AddStringToObject(item, "name", config.name.c_str()) == nullptr
+            || cJSON_AddStringToObject(item, "category", categoryName(config.category)) == nullptr
             || !cJSON_AddItemToArray(root.get(), item)) {
             cJSON_Delete(item);
             return false;
@@ -211,6 +240,9 @@ bool IngredientConfigRepository::deserialize(
         const cJSON* name = cJSON_IsObject(item)
             ? cJSON_GetObjectItemCaseSensitive(item, "name")
             : nullptr;
+        const cJSON* category = cJSON_IsObject(item)
+            ? cJSON_GetObjectItemCaseSensitive(item, "category")
+            : nullptr;
         if (!isUint16(id) || !cJSON_IsString(name) || name->valuestring == nullptr) {
             return false;
         }
@@ -232,7 +264,13 @@ bool IngredientConfigRepository::deserialize(
             return false;
         }
 
-        parsed.push_back({.id = ingredientId, .name = name->valuestring});
+        IngredientCategory parsedCategory = IngredientCategory::OTHER;
+        if (!readCategory(category, parsedCategory)) {
+            return false;
+        }
+        parsed.push_back({.id = ingredientId,
+                          .name = name->valuestring,
+                          .category = parsedCategory});
     }
 
     configs = std::move(parsed);

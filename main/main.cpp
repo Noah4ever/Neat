@@ -1,16 +1,19 @@
 #include "api/API.hpp"
 #include "bottle/BottleStateRepository.hpp"
 #include "feedback/FeedbackControl.hpp"
+#include "developer/DeveloperControl.hpp"
 #include "io/GPIOOutput.hpp"
 #include "io/LED.hpp"
 #include "io/Pins.hpp"
 #include "machine/MachineLogic.hpp"
+#include "media/MediaStorage.hpp"
 #include "pump/PumpControl.hpp"
 #include "sensor/SensorHandling.hpp"
 #include "settings/DeviceSettingsRepository.hpp"
 #include "storage/IngredientConfigRepository.hpp"
 #include "storage/PumpConfigRepository.hpp"
 #include "storage/RecipeConfigRepository.hpp"
+#include "system/SystemMonitor.hpp"
 #include "wifi/WiFiController.hpp"
 
 #include <memory>
@@ -45,6 +48,7 @@ extern "C" void app_main(void) {
   IngredientConfigRepository ingredientRepository;
   DeviceSettingsRepository deviceSettingsRepository;
   BottleStateRepository bottleStateRepository;
+  MediaStorage mediaStorage;
 
   // Machine
   PumpControl pumpControl;
@@ -73,20 +77,26 @@ extern "C" void app_main(void) {
       .led = LED(std::make_unique<GPIOOutput>(Pins::BOTTLE_LED_6))});
   FeedbackControl feedbackControl(std::move(pumpLedMappings), Pins::BUZZER);
 
-  MachineLogic machineLogic(pumpControl, recipeRepository, pumpRepository,
+  MachineLogic machineLogic(pumpControl, recipeRepository, ingredientRepository,
+                            pumpRepository,
                             sensorHandling, feedbackControl,
                             deviceSettingsRepository, bottleStateRepository);
 
   machineLogic.init();
+  DeveloperControl developerControl(machineLogic, pumpControl, sensorHandling,
+                                    feedbackControl);
 
   // Network
   WiFiController wifiController("NEAT", "neat1234");
 
   ESP_ERROR_CHECK(wifiController.init());
 
+  SystemMonitor systemMonitor(wifiController, mediaStorage);
+
   // API
   API api(machineLogic, pumpControl, wifiController, recipeRepository,
-          ingredientRepository, pumpRepository, bottleStateRepository);
+          ingredientRepository, pumpRepository, bottleStateRepository,
+          mediaStorage, systemMonitor, developerControl);
 
   ESP_ERROR_CHECK(api.start());
 
@@ -94,6 +104,7 @@ extern "C" void app_main(void) {
   while (true) {
     machineLogic.update();
     feedbackControl.update();
+    systemMonitor.update();
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }

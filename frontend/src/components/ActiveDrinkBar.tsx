@@ -7,7 +7,7 @@ export function ActiveDrinkBar() {
   const location = useLocation();
   if (
     !session ||
-    status?.state !== "running" ||
+    (status?.state !== "running" && status?.state !== "paused") ||
     location.pathname === "/progress"
   )
     return null;
@@ -18,10 +18,18 @@ export function ActiveDrinkBar() {
         onClick={() => navigate("/progress")}
         type="button"
       >
-        <span className="status-dot" />
+        <span
+          className={
+            status.state === "paused" ? "status-dot paused" : "status-dot"
+          }
+        />
         <span>
           <strong>{session.cocktail.name}</strong>
-          <small>Making your drink · {status.progress}%</small>
+          <small>
+            {status.state === "paused"
+              ? "Paused · glass removed"
+              : `Making your drink · ${status.progress}%`}
+          </small>
         </span>
       </button>
       <button

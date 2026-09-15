@@ -1,21 +1,26 @@
-export type DrinkStrength = "less" | "standard" | "more";
+import type {
+  IngredientCategory,
+  PreparationStep,
+  RecipeAvailability,
+  RecipeItem,
+} from "./device";
 
-export interface CocktailIngredient {
+export type DrinkStrength = "less" | "standard" | "more";
+export interface CocktailIngredient extends RecipeItem {
   id: number;
   name: string;
+  category: IngredientCategory;
   amount: string;
-  category: "Alcohol" | "Juice" | "Mixer" | "Syrup";
 }
-
 export interface Cocktail {
   id: number;
   name: string;
   imageKey: string | null;
   subtitle: string;
   description: string;
-  manualItems: string[];
-  availableSizes: number[];
-  defaultSize: number;
-  defaultStrength: DrinkStrength;
+  baseSizeMl: number;
+  preparationSteps: PreparationStep[];
+  availability: RecipeAvailability;
+  strengthAdjustmentAvailable: boolean;
   ingredients: CocktailIngredient[];
 }

@@ -16,5 +16,8 @@ idf_component_register(
         storage
         settings
         bottle
+        media
+        system
+        developer
         nvs_flash
 )

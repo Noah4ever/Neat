@@ -29,14 +29,16 @@ export function Header({
           </button>
         )}
       </div>
-      <button
-        className="icon-button admin-entry"
-        aria-label="Admin settings"
-        type="button"
-        onClick={() => navigate("/settings")}
-      >
-        <Settings size={20} />
-      </button>
+      <div className="header-actions">
+        <button
+          className="icon-button admin-entry"
+          aria-label="Admin settings"
+          type="button"
+          onClick={() => navigate("/settings")}
+        >
+          <Settings size={20} />
+        </button>
+      </div>
     </header>
   );
 }

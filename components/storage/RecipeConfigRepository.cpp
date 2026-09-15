@@ -60,7 +60,11 @@ std::optional<RecipeConfig> RecipeConfigRepository::findById(std::uint16_t id)
 std::optional<RecipeConfig> RecipeConfigRepository::create(
     const std::string& name,
     const std::vector<RecipeItem>& items,
-    std::optional<std::string> imageKey)
+    std::optional<std::string> imageKey,
+    std::optional<std::string> subtitle,
+    std::optional<std::string> description,
+    std::uint16_t baseSizeMl,
+    std::vector<PreparationStep> preparationSteps)
 {
     std::vector<RecipeConfig> configs;
     if (!readAll(configs)) {
@@ -76,6 +80,10 @@ std::optional<RecipeConfig> RecipeConfigRepository::create(
         .id = id,
         .name = name,
         .imageKey = std::move(imageKey),
+        .subtitle = std::move(subtitle),
+        .description = std::move(description),
+        .baseSizeMl = baseSizeMl,
+        .preparationSteps = std::move(preparationSteps),
         .items = items,
     };
     configs.push_back(config);
@@ -162,9 +170,11 @@ bool RecipeConfigRepository::serialize(
     for (const RecipeConfig& config : configs) {
         cJSON* item = cJSON_CreateObject();
         cJSON* items = cJSON_CreateArray();
-        if (item == nullptr || items == nullptr) {
+        cJSON* preparationSteps = cJSON_CreateArray();
+        if (item == nullptr || items == nullptr || preparationSteps == nullptr) {
             cJSON_Delete(item);
             cJSON_Delete(items);
+            cJSON_Delete(preparationSteps);
             return false;
         }
 
@@ -184,9 +194,11 @@ bool RecipeConfigRepository::serialize(
 
         if (!itemsValid
             || cJSON_AddNumberToObject(item, "id", config.id) == nullptr
-            || cJSON_AddStringToObject(item, "name", config.name.c_str()) == nullptr) {
+            || cJSON_AddStringToObject(item, "name", config.name.c_str()) == nullptr
+            || cJSON_AddNumberToObject(item, "baseSizeMl", config.baseSizeMl) == nullptr) {
             cJSON_Delete(item);
             cJSON_Delete(items);
+            cJSON_Delete(preparationSteps);
             return false;
         }
 
@@ -195,20 +207,56 @@ bool RecipeConfigRepository::serialize(
                     item, "imageKey", config.imageKey->c_str()) == nullptr) {
                 cJSON_Delete(item);
                 cJSON_Delete(items);
+                cJSON_Delete(preparationSteps);
                 return false;
             }
         } else if (cJSON_AddNullToObject(item, "imageKey") == nullptr) {
             cJSON_Delete(item);
             cJSON_Delete(items);
+            cJSON_Delete(preparationSteps);
             return false;
         }
 
+        const auto addOptionalString = [item](const char* key,
+                                              const std::optional<std::string>& value) {
+            return value ? cJSON_AddStringToObject(item, key, value->c_str()) != nullptr
+                         : cJSON_AddNullToObject(item, key) != nullptr;
+        };
+        if (!addOptionalString("subtitle", config.subtitle)
+            || !addOptionalString("description", config.description)) {
+            cJSON_Delete(item);
+            cJSON_Delete(items);
+            cJSON_Delete(preparationSteps);
+            return false;
+        }
+
+        for (const PreparationStep& step : config.preparationSteps) {
+            cJSON* stepJson = cJSON_CreateObject();
+            const char* phase = step.phase == PreparationPhase::BEFORE ? "BEFORE" : "AFTER";
+            if (!stepJson
+                || !cJSON_AddStringToObject(stepJson, "phase", phase)
+                || !cJSON_AddStringToObject(stepJson, "text", step.text.c_str())
+                || !cJSON_AddItemToArray(preparationSteps, stepJson)) {
+                cJSON_Delete(stepJson);
+                cJSON_Delete(item);
+                cJSON_Delete(items);
+                cJSON_Delete(preparationSteps);
+                return false;
+            }
+        }
+
+        if (!cJSON_AddItemToObject(item, "preparationSteps", preparationSteps)) {
+            cJSON_Delete(item);
+            cJSON_Delete(items);
+            cJSON_Delete(preparationSteps);
+            return false;
+        }
+        preparationSteps = nullptr;
         if (!cJSON_AddItemToObject(item, "items", items)) {
             cJSON_Delete(item);
             cJSON_Delete(items);
             return false;
         }
-
         items = nullptr;
         if (!cJSON_AddItemToArray(root.get(), item)) {
             cJSON_Delete(item);
@@ -246,6 +294,18 @@ bool RecipeConfigRepository::deserialize(
         const cJSON* imageKey = cJSON_IsObject(item)
             ? cJSON_GetObjectItemCaseSensitive(item, "imageKey")
             : nullptr;
+        const cJSON* subtitle = cJSON_IsObject(item)
+            ? cJSON_GetObjectItemCaseSensitive(item, "subtitle")
+            : nullptr;
+        const cJSON* description = cJSON_IsObject(item)
+            ? cJSON_GetObjectItemCaseSensitive(item, "description")
+            : nullptr;
+        const cJSON* baseSize = cJSON_IsObject(item)
+            ? cJSON_GetObjectItemCaseSensitive(item, "baseSizeMl")
+            : nullptr;
+        const cJSON* preparationSteps = cJSON_IsObject(item)
+            ? cJSON_GetObjectItemCaseSensitive(item, "preparationSteps")
+            : nullptr;
         const cJSON* items = cJSON_IsObject(item)
             ? cJSON_GetObjectItemCaseSensitive(item, "items")
             : nullptr;
@@ -260,6 +320,61 @@ bool RecipeConfigRepository::deserialize(
                 return false;
             }
             parsedImageKey = imageKey->valuestring;
+        }
+
+        const auto readOptionalString = [](const cJSON* value,
+                                           std::optional<std::string>& result) {
+            result.reset();
+            if (!value || cJSON_IsNull(value)) {
+                return true;
+            }
+            if (!cJSON_IsString(value) || !value->valuestring) {
+                return false;
+            }
+            result = value->valuestring;
+            return true;
+        };
+        std::optional<std::string> parsedSubtitle;
+        std::optional<std::string> parsedDescription;
+        if (!readOptionalString(subtitle, parsedSubtitle)
+            || !readOptionalString(description, parsedDescription)) {
+            return false;
+        }
+
+        std::uint16_t parsedBaseSize = 400;
+        if (baseSize) {
+            if (!isUint16(baseSize) || baseSize->valuedouble == 0) {
+                return false;
+            }
+            parsedBaseSize = static_cast<std::uint16_t>(baseSize->valuedouble);
+        }
+
+        std::vector<PreparationStep> parsedSteps;
+        if (preparationSteps) {
+            if (!cJSON_IsArray(preparationSteps)) {
+                return false;
+            }
+            const cJSON* stepJson = nullptr;
+            cJSON_ArrayForEach(stepJson, preparationSteps) {
+                const cJSON* phase = cJSON_IsObject(stepJson)
+                    ? cJSON_GetObjectItemCaseSensitive(stepJson, "phase") : nullptr;
+                const cJSON* text = cJSON_IsObject(stepJson)
+                    ? cJSON_GetObjectItemCaseSensitive(stepJson, "text") : nullptr;
+                if (!cJSON_IsString(phase) || !phase->valuestring
+                    || !cJSON_IsString(text) || !text->valuestring
+                    || text->valuestring[0] == '\0') {
+                    return false;
+                }
+                const std::string phaseText = phase->valuestring;
+                if (phaseText != "BEFORE" && phaseText != "AFTER") {
+                    return false;
+                }
+                parsedSteps.push_back({
+                    .phase = phaseText == "BEFORE" ? PreparationPhase::BEFORE
+                                                    : PreparationPhase::AFTER,
+                    .text = text->valuestring,
+                });
+            }
         }
 
         const std::uint16_t recipeId = static_cast<std::uint16_t>(id->valuedouble);
@@ -294,6 +409,10 @@ bool RecipeConfigRepository::deserialize(
             .id = recipeId,
             .name = name->valuestring,
             .imageKey = std::move(parsedImageKey),
+            .subtitle = std::move(parsedSubtitle),
+            .description = std::move(parsedDescription),
+            .baseSizeMl = parsedBaseSize,
+            .preparationSteps = std::move(parsedSteps),
             .items = std::move(parsedItems),
         });
     }

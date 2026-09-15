@@ -1,6 +1,7 @@
 interface Option<T extends string | number> {
   label: string;
   value: T;
+  disabled?: boolean;
 }
 
 interface SegmentedOptionGroupProps<T extends string | number> {
@@ -21,6 +22,7 @@ export function SegmentedOptionGroup<T extends string | number>({
       {options.map((option) => (
         <button
           aria-pressed={option.value === value}
+          disabled={option.disabled}
           key={option.value}
           onClick={() => onChange(option.value)}
           type="button"
