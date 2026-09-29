@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Play } from "lucide-react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { toast } from "sonner";
 import { CocktailImage } from "../components/CocktailImage";
 import { PageInfoButton } from "../components/PageInfoButton";
 import { QueryMessage } from "../components/QueryMessage";
@@ -9,9 +10,11 @@ import { SegmentedOptionGroup } from "../components/SegmentedOptionGroup";
 import { getDeviceSettings, getRecipe } from "../services/api";
 import { showApiErrorWithRetry } from "../services/notifications";
 import { ApiError } from "../services/errors";
+import { claimCloudQueueEntry, getCloudConfig } from "../services/cloud";
 import { useDrinkSession } from "../state/useDrinkSession";
 import type { Cocktail, DrinkStrength } from "../types/cocktail";
 import type { DeviceSettings } from "../types/device";
+import { tr } from "../services/language";
 
 export function PrepareCocktailPage() {
   const { id } = useParams();
@@ -44,11 +47,18 @@ function Preparation({
   const [size, setSize] = useState(settings.defaultDrinkSizeMl);
   const [strength, setStrength] = useState<DrinkStrength>("standard");
   const [allowWithoutGlass, setAllowWithoutGlass] = useState(false);
-  const { start, busy } = useDrinkSession();
+  const { start, busy, status } = useDrinkSession();
   const navigate = useNavigate();
+  const cache = useQueryClient();
+  const [searchParams] = useSearchParams();
+  const queueEntry = searchParams.get("queueEntry");
   const before = cocktail.preparationSteps.filter(
     (step) => step.phase === "BEFORE",
   );
+  const manualIngredients = cocktail.ingredients.filter(
+    (item) => item.machineDispensed === false,
+  );
+  const glassOverrideActive = allowWithoutGlass && !status?.glassPresent;
   const mutation = useMutation<void, Error, boolean>({
     mutationFn: (ignoreGlass) =>
       start(cocktail, {
@@ -58,7 +68,17 @@ function Preparation({
         overrides: [],
         ignoreGlass,
       }),
-    onSuccess: () => navigate("/progress"),
+    onSuccess: () => {
+      if (queueEntry) {
+        const { machineId } = getCloudConfig();
+        void claimCloudQueueEntry(machineId, queueEntry)
+          .then(() => cache.invalidateQueries({ queryKey: ["cloud-queue"] }))
+          .catch(() =>
+            toast.warning("Drink started, but the online queue did not update"),
+          );
+      }
+      navigate("/progress");
+    },
     onError: (error) => {
       if (error instanceof ApiError && error.key === "no_glass") {
         setAllowWithoutGlass(true);
@@ -82,9 +102,9 @@ function Preparation({
         </div>
         <div className="control-block">
           <span className="control-step">1</span>
-          <h2>Drink size</h2>
+          <h2>{tr("Drink size", "Cocktailgröße")}</h2>
           <SegmentedOptionGroup
-            label="Drink size"
+            label={tr("Drink size", "Cocktailgröße")}
             value={size}
             onChange={setSize}
             options={settings.drinkSizesMl.map((value) => ({
@@ -96,20 +116,20 @@ function Preparation({
         {cocktail.ingredients.some((item) => item.category === "ALCOHOL") && (
           <div className="control-block">
             <span className="control-step">2</span>
-            <h2>Alcohol strength</h2>
+            <h2>{tr("Alcohol strength", "Alkoholstärke")}</h2>
             <SegmentedOptionGroup
-              label="Alcohol strength"
+              label={tr("Alcohol strength", "Alkoholstärke")}
               value={strength}
               onChange={setStrength}
               options={[
                 {
-                  label: "Less",
+                  label: tr("Less", "Weniger"),
                   value: "less",
                   disabled: !cocktail.strengthAdjustmentAvailable,
                 },
                 { label: "Standard", value: "standard" },
                 {
-                  label: "More",
+                  label: tr("More", "Mehr"),
                   value: "more",
                   disabled: !cocktail.strengthAdjustmentAvailable,
                 },
@@ -123,7 +143,7 @@ function Preparation({
           </div>
         )}
         <div className="ingredients-preview">
-          <h2>In your drink</h2>
+          <h2>{tr("In your drink", "In deinem Cocktail")}</h2>
           <div>
             {cocktail.ingredients.map((ingredient) => (
               <span key={ingredient.id}>
@@ -133,13 +153,16 @@ function Preparation({
             ))}
           </div>
         </div>
-        {before.length > 0 && (
+        {(before.length > 0 || manualIngredients.length > 0) && (
           <div className="before-mixing mixing-preparation">
             <div className="mixing-preparation__heading">
-              <h2>Before mixing</h2>
-              <small>Add these to your glass, then make your drink.</small>
+              <h2>{tr("Before mixing", "Vor dem Mixen")}</h2>
+              <small>{tr("Add these to your glass, then make your drink.", "Gib diese Dinge zuerst in dein Glas.")}</small>
             </div>
             <ul className="preparation-list">
+              {manualIngredients.map((ingredient) => (
+                <li key={`manual-${ingredient.id}`}><strong>Add {ingredient.name} manually</strong><small>{Math.round(ingredient.amountMl * size / cocktail.baseSizeMl)} ml after Neat has dispensed</small></li>
+              ))}
               {before.map((step, index) => (
                 <li key={`${step.text}-${index}`}>{step.text}</li>
               ))}
@@ -154,19 +177,19 @@ function Preparation({
             !cocktail.availability.available ||
             !cocktail.ingredients.length
           }
-          onClick={() => mutation.mutate(allowWithoutGlass)}
+          onClick={() => mutation.mutate(glassOverrideActive)}
           type="button"
         >
           <Play size={21} fill="currentColor" />
           {mutation.isPending
-            ? "Starting…"
+                ? tr("Starting…", "Startet…")
             : busy
-              ? "Machine is busy"
-              : allowWithoutGlass
-                ? "Start without glass sensor"
-                : "Make drink"}
+              ? tr("Machine is busy", "Maschine ist beschäftigt")
+              : glassOverrideActive
+                ? tr("Start without glass sensor", "Ohne Glaserkennung starten")
+                : tr("Make drink", "Cocktail mixen")}
         </button>
-        {allowWithoutGlass && (
+        {glassOverrideActive && (
           <p className="sensor-override-note">
             No glass was detected. Continuing will temporarily ignore the
             sensor for this drink.

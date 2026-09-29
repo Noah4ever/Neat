@@ -18,8 +18,10 @@ import { cocktailImages } from "../data/cocktailImages";
 import {
   deleteImage,
   deleteRecipe,
+  assignPump,
   getDeviceSettings,
   getIngredients,
+  getPumps,
   getRecipe,
   saveRecipe,
   uploadImage,
@@ -45,6 +47,14 @@ const blank: Cocktail = {
   strengthAdjustmentAvailable: false,
   ingredients: [],
 };
+function IntegerTextField({ value, onChange, label }: { value: number; onChange: (value: number) => void; label?: string }) {
+  const [draft, setDraft] = useState(String(value));
+  return <input aria-label={label} inputMode="numeric" pattern="[0-9]*" required value={draft} onChange={(event) => {
+    const next = event.target.value.replace(/\D/g, "").slice(0, 5);
+    setDraft(next);
+    if (next) onChange(Math.min(65535, Number(next)));
+  }} onBlur={() => { if (!draft) { setDraft("1"); onChange(1); } }} />;
+}
 export function EditRecipePage() {
   const { id } = useParams();
   const settings = useQuery({
@@ -74,12 +84,26 @@ function RecipeEditor({ initial }: { initial: Cocktail }) {
   const [adding, setAdding] = useState("");
   const [confirm, setConfirm] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [assigningIngredient, setAssigningIngredient] = useState<number | null>(null);
   const originalImage = useRef(initial.imageKey);
   const navigate = useNavigate();
   const cache = useQueryClient();
   const ingredients = useQuery({
     queryKey: ["ingredients"],
     queryFn: getIngredients,
+  });
+  const pumps = useQuery({ queryKey: ["pumps"], queryFn: getPumps });
+  const assign = useMutation({
+    mutationFn: (pumpId: number) => assignPump(pumpId, assigningIngredient),
+    onSuccess: async () => {
+      const ingredientId = assigningIngredient;
+      setAssigningIngredient(null);
+      await cache.invalidateQueries({ queryKey: ["pumps"] });
+      await cache.invalidateQueries({ queryKey: ["recipes"] });
+      if (ingredientId != null) setRecipe((current) => ({ ...current, availability: { ...current.availability, missingIngredientIds: current.availability.missingIngredientIds.filter((value) => value !== ingredientId) } }));
+      toast.success("Pump assigned");
+    },
+    onError: showApiError,
   });
   const mutation = useMutation({
     mutationFn: async (remove: boolean) => {
@@ -106,14 +130,7 @@ function RecipeEditor({ initial }: { initial: Cocktail }) {
     ingredients.data?.filter(
       (item) => !recipe.ingredients.some((value) => value.id === item.id),
     ) ?? [];
-  const availabilityNames = [
-    ...recipe.availability.missingIngredientIds,
-    ...recipe.availability.uncalibratedIngredientIds,
-  ].map(
-    (id) =>
-      ingredients.data?.find((item) => item.id === id)?.name ??
-      `Ingredient ${id}`,
-  );
+  const ingredientName = (id: number) => ingredients.data?.find((item) => item.id === id)?.name ?? `Ingredient ${id}`;
   const updateStep = (index: number, patch: Partial<PreparationStep>) =>
     setRecipe({
       ...recipe,
@@ -163,12 +180,11 @@ function RecipeEditor({ initial }: { initial: Cocktail }) {
       </div>
       {!recipe.availability.available && recipe.id > 0 && (
         <section className="availability-note">
-          <strong>Unavailable</strong>
-          <p>
-            {availabilityNames.length
-              ? availabilityNames.join(", ")
-              : "Check the pump assignments."}
-          </p>
+          <strong>This recipe is not ready yet</strong>
+          <div className="availability-actions">
+            {recipe.availability.missingIngredientIds.filter((ingredientId) => recipe.ingredients.find((item) => item.ingredientId === ingredientId)?.machineDispensed !== false).map((ingredientId) => <div className="availability-action-row" key={`missing-${ingredientId}`}><span>{ingredientName(ingredientId)} is not connected to a pump</span><button onClick={() => setAssigningIngredient(ingredientId)} type="button">Choose pump</button><button onClick={() => setRecipe({ ...recipe, ingredients: recipe.ingredients.map((item) => item.ingredientId === ingredientId ? { ...item, machineDispensed: false } : item), availability: { ...recipe.availability, missingIngredientIds: recipe.availability.missingIngredientIds.filter((value) => value !== ingredientId) } })} type="button">Keep outside Neat</button></div>)}
+            {recipe.availability.uncalibratedIngredientIds.map((ingredientId) => { const pump = pumps.data?.find((item) => item.ingredientId === ingredientId); return <button key={`calibration-${ingredientId}`} onClick={() => navigate(`/settings/pumps?area=calibration${pump ? `&pump=${pump.id}` : ""}`)} type="button"><span>{ingredientName(ingredientId)} needs calibration</span><small>Calibrate ›</small></button>; })}
+          </div>
         </section>
       )}
       <div className="edit-recipe-grid">
@@ -273,16 +289,7 @@ function RecipeEditor({ initial }: { initial: Cocktail }) {
           </label>
           <label>
             Recipe size · ml
-            <input
-              type="number"
-              min={1}
-              max={65535}
-              required
-              value={recipe.baseSizeMl}
-              onChange={(event) =>
-                setRecipe({ ...recipe, baseSizeMl: Number(event.target.value) })
-              }
-            />
+            <IntegerTextField value={recipe.baseSizeMl} onChange={(baseSizeMl) => setRecipe({ ...recipe, baseSizeMl })} />
             <small>
               Enter ingredient amounts for this size. Neat scales them for other
               drink sizes.
@@ -305,30 +312,14 @@ function RecipeEditor({ initial }: { initial: Cocktail }) {
             </div>
             <label className="amount-field">
               <span className="sr-only">{item.name} amount</span>
-              <input
-                type="number"
-                required
-                min={1}
-                max={65535}
-                step={1}
-                value={item.amountMl}
-                onChange={(event) =>
-                  setRecipe({
-                    ...recipe,
-                    ingredients: recipe.ingredients.map((value) =>
-                      value.id === item.id
-                        ? {
-                            ...value,
-                            amountMl: Number(event.target.value),
-                            amount: `${event.target.value} ml`,
-                          }
-                        : value,
-                    ),
-                  })
-                }
-              />
+              <IntegerTextField label={`${item.name} amount`} value={item.amountMl} onChange={(amountMl) => setRecipe({ ...recipe, ingredients: recipe.ingredients.map((value) => value.id === item.id ? { ...value, amountMl, amount: `${amountMl} ml` } : value) })} />
               <span>ml</span>
             </label>
+            <select aria-label={`${item.name} dispensing mode`} className="ingredient-mode-select" value={item.machineDispensed === false ? "manual" : "machine"} onChange={(event) => {
+              const machineDispensed = event.target.value === "machine";
+              setRecipe({ ...recipe, ingredients: recipe.ingredients.map((value) => value.id === item.id ? { ...value, machineDispensed } : value) });
+              if (machineDispensed && !pumps.data?.some((pump) => pump.ingredientId === item.ingredientId)) setAssigningIngredient(item.ingredientId);
+            }}><option value="machine">Dispense with Neat</option><option value="manual">Add manually</option></select>
             <button
               type="button"
               className="icon-button danger-text"
@@ -376,6 +367,7 @@ function RecipeEditor({ initial }: { initial: Cocktail }) {
                     id: item.id,
                     ingredientId: item.id,
                     amountMl: 30,
+                    machineDispensed: true,
                     amount: "30 ml",
                   },
                 ],
@@ -478,6 +470,14 @@ function RecipeEditor({ initial }: { initial: Cocktail }) {
           Delete recipe
         </button>
       )}
+      <Modal
+        open={assigningIngredient !== null}
+        onOpenChange={(open) => { if (!open && !assign.isPending) setAssigningIngredient(null); }}
+        title={`Choose a pump for ${assigningIngredient == null ? "ingredient" : ingredientName(assigningIngredient)}`}
+        description="Select the physical pump this ingredient is connected to. Its current assignment will be replaced."
+      >
+        <div className="pump-choice-list">{pumps.data?.map((pump) => <button disabled={assign.isPending} key={pump.id} onClick={() => assign.mutate(pump.id)} type="button"><strong>Pump {pump.id}</strong><small>{pump.ingredientId ? ingredientName(pump.ingredientId) : "Available"}</small></button>)}</div>
+      </Modal>
       <Modal
         open={confirm}
         onOpenChange={setConfirm}

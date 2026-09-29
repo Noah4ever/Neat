@@ -1,4 +1,5 @@
 import { Search, X } from "lucide-react";
+import { tr } from "../services/language";
 
 interface SearchBarProps {
   placeholder?: string;
@@ -9,7 +10,7 @@ interface SearchBarProps {
 export function SearchBar({
   value,
   onChange,
-  placeholder = "Search cocktails…",
+  placeholder = tr("Search cocktails…", "Cocktails suchen…"),
 }: SearchBarProps) {
   return (
     <label className="search-bar">

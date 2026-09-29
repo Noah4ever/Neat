@@ -9,6 +9,7 @@ export interface Ingredient {
 export interface RecipeItem {
   ingredientId: number;
   amountMl: number;
+  machineDispensed?: boolean;
 }
 export interface PreparationStep {
   phase: "BEFORE" | "AFTER";
@@ -38,6 +39,7 @@ export interface PumpConfig {
   output: { type: 0; channel: number };
 }
 export interface DeviceInfo {
+  id: string;
   name: string;
   model: string;
   version: string;
@@ -66,7 +68,10 @@ export interface DeviceSettings {
   defaultDrinkSizeMl: number;
   alcoholStrengthLessFactor: number;
   alcoholStrengthMoreFactor: number;
+  successSound: BuzzerTone[];
+  errorSound: BuzzerTone[];
 }
+export interface BuzzerTone { frequencyHz: number; durationMs: number; }
 export interface BottleState {
   pumpId: number;
   capacityMl: number;

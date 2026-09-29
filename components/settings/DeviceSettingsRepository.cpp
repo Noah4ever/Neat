@@ -17,6 +17,16 @@ constexpr char kDrinkSizesKey[] = "drink_sizes";
 constexpr char kDefaultSizeKey[] = "default_size";
 constexpr char kLessFactorKey[] = "less_factor";
 constexpr char kMoreFactorKey[] = "more_factor";
+constexpr char kSuccessSoundKey[] = "success_sound";
+constexpr char kErrorSoundKey[] = "error_sound";
+
+bool soundValid(const std::vector<BuzzerTone> &sound) {
+  return !sound.empty() && sound.size() <= 12 &&
+         std::all_of(sound.begin(), sound.end(), [](const BuzzerTone &tone) {
+           return tone.frequencyHz >= 100 && tone.frequencyHz <= 5000 &&
+                  tone.durationMs >= 20 && tone.durationMs <= 2000;
+         });
+}
 
 bool settingsValid(const DeviceSettings &settings) {
   if (settings.drinkSizesMl.empty() || settings.drinkSizesMl.size() > 16 ||
@@ -24,7 +34,8 @@ bool settingsValid(const DeviceSettings &settings) {
       !std::isfinite(settings.alcoholStrengthMoreFactor) ||
       settings.alcoholStrengthLessFactor <= 0.0f ||
       settings.alcoholStrengthLessFactor >= 1.0f ||
-      settings.alcoholStrengthMoreFactor <= 1.0f) {
+      settings.alcoholStrengthMoreFactor <= 1.0f ||
+      !soundValid(settings.successSound) || !soundValid(settings.errorSound)) {
     return false;
   }
   std::vector<std::uint16_t> sizes = settings.drinkSizesMl;
@@ -41,6 +52,15 @@ bool readFloat(nvs_handle_t handle, const char *key, float &value) {
   std::size_t size = sizeof(value);
   return nvs_get_blob(handle, key, &value, &size) == ESP_OK &&
          size == sizeof(value) && std::isfinite(value);
+}
+void readSound(nvs_handle_t handle, const char *key,
+               std::vector<BuzzerTone> &sound) {
+  std::size_t bytes = 0;
+  if (nvs_get_blob(handle, key, nullptr, &bytes) != ESP_OK || bytes == 0 ||
+      bytes % sizeof(BuzzerTone) != 0 || bytes / sizeof(BuzzerTone) > 12) return;
+  std::vector<BuzzerTone> value(bytes / sizeof(BuzzerTone));
+  if (nvs_get_blob(handle, key, value.data(), &bytes) == ESP_OK && soundValid(value))
+    sound = std::move(value);
 }
 } // namespace
 
@@ -76,6 +96,8 @@ DeviceSettings DeviceSettingsRepository::load() const {
   nvs_get_u16(handle, kDefaultSizeKey, &settings.defaultDrinkSizeMl);
   readFloat(handle, kLessFactorKey, settings.alcoholStrengthLessFactor);
   readFloat(handle, kMoreFactorKey, settings.alcoholStrengthMoreFactor);
+  readSound(handle, kSuccessSoundKey, settings.successSound);
+  readSound(handle, kErrorSoundKey, settings.errorSound);
   nvs_close(handle);
 
   if (!settingsValid(settings)) {
@@ -123,6 +145,8 @@ bool DeviceSettingsRepository::save(const DeviceSettings &settings) const {
                           &settings.alcoholStrengthMoreFactor,
                           sizeof(settings.alcoholStrengthMoreFactor));
   }
+  if (result == ESP_OK) result = nvs_set_blob(handle, kSuccessSoundKey, settings.successSound.data(), settings.successSound.size() * sizeof(BuzzerTone));
+  if (result == ESP_OK) result = nvs_set_blob(handle, kErrorSoundKey, settings.errorSound.data(), settings.errorSound.size() * sizeof(BuzzerTone));
   if (result == ESP_OK) {
     result = nvs_commit(handle);
   }

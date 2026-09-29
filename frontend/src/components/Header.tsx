@@ -2,6 +2,8 @@ import { ChevronLeft, Settings } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Brand } from "./Brand";
 import { SearchBar } from "./SearchBar";
+import { USE_MOCK_API } from "../services/api";
+import { tr } from "../services/language";
 export function Header({
   search,
   onSearchChange,
@@ -14,7 +16,10 @@ export function Header({
   const home = location.pathname === "/";
   return (
     <header className="app-header">
-      <Brand />
+      <div className="brand-mode">
+        <Brand />
+        {USE_MOCK_API && <span className="mock-mode-badge">Mock</span>}
+      </div>
       <div className="header-center">
         {home ? (
           <SearchBar value={search} onChange={onSearchChange} />
@@ -25,7 +30,7 @@ export function Header({
             onClick={() => navigate("/")}
           >
             <ChevronLeft size={22} />
-            Drinks
+            {tr("Drinks", "Cocktails")}
           </button>
         )}
       </div>

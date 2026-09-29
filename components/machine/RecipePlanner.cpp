@@ -29,7 +29,7 @@ RecipePlanner::availability(const std::vector<RecipeItem> &items,
                             .missingIngredientIds = {},
                             .uncalibratedIngredientIds = {}};
   for (const RecipeItem &item : items) {
-    if (item.amountMl == 0) {
+    if (item.amountMl == 0 || !item.machineDispensed) {
       continue;
     }
     bool assigned = false;
@@ -87,6 +87,7 @@ RecipeCalculationResult RecipePlanner::calculate(
     std::uint16_t ingredientId;
     double ml;
     bool alcohol;
+    bool machineDispensed;
   };
   std::vector<Amount> amounts;
   const double sizeFactor = static_cast<double>(sizeMl) / recipe.baseSizeMl;
@@ -101,7 +102,8 @@ RecipeCalculationResult RecipePlanner::calculate(
           {.ingredientId = item.ingredientId,
            .ml = scaled,
            .alcohol = categoryFor(item.ingredientId, ingredients) ==
-                      IngredientCategory::ALCOHOL});
+                      IngredientCategory::ALCOHOL,
+           .machineDispensed = item.machineDispensed});
     } else {
       existing->ml += scaled;
     }
@@ -144,7 +146,8 @@ RecipeCalculationResult RecipePlanner::calculate(
       return RecipeCalculationResult::INVALID_RECIPE;
     }
     effectiveItems.push_back({.ingredientId = amount.ingredientId,
-                              .amountMl = static_cast<std::uint16_t>(rounded)});
+                              .amountMl = static_cast<std::uint16_t>(rounded),
+                              .machineDispensed = amount.machineDispensed});
     roundedTotal += rounded;
   }
   const long correction = targetTotal - roundedTotal;

@@ -1,13 +1,20 @@
-import { useEffect, useState } from "react";
-import { Maximize, Minimize } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Maximize, Minimize, X } from "lucide-react";
 export function FullscreenButton() {
   const [active, setActive] = useState(!!document.fullscreenElement);
   const [message, setMessage] = useState("");
+  const control = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const change = () => setActive(!!document.fullscreenElement);
     document.addEventListener("fullscreenchange", change);
     return () => document.removeEventListener("fullscreenchange", change);
   }, []);
+  useEffect(() => {
+    if (!message) return;
+    const dismiss = (event: PointerEvent) => { if (!control.current?.contains(event.target as Node)) setMessage(""); };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, [message]);
   async function toggle() {
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
@@ -27,7 +34,7 @@ export function FullscreenButton() {
     }
   }
   return (
-    <div className="fullscreen-control">
+    <div className="fullscreen-control" ref={control}>
       <button
         className="icon-button"
         aria-label={active ? "Exit full screen" : "Enter full screen"}
@@ -37,7 +44,7 @@ export function FullscreenButton() {
       >
         {active ? <Minimize /> : <Maximize />}
       </button>
-      {message && <p role="status">{message}</p>}
+      {message && <div className="fullscreen-hint" role="status"><span>{message}</span><button aria-label="Dismiss full screen hint" onClick={() => setMessage("")} type="button"><X size={16} /></button></div>}
     </div>
   );
 }

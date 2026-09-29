@@ -8,6 +8,7 @@
 struct RecipeItem {
   std::uint16_t ingredientId;
   std::uint16_t amountMl;
+  bool machineDispensed = true;
 };
 
 enum class PreparationPhase { BEFORE, AFTER };

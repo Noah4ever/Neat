@@ -35,6 +35,15 @@ function helpFor(path: string): PageHelp {
         "You can browse other drinks or stop the current operation.",
       ],
     };
+  if (path === "/queue")
+    return {
+      title: "Guest queue",
+      description: "Phone requests for this machine appear here.",
+      steps: [
+        "Ask the guest to tap their name when they reach the machine.",
+        "Neat opens the normal preparation screen for their requested drink.",
+      ],
+    };
   if (path.includes("/recipes/"))
     return {
       title: "Edit recipe",

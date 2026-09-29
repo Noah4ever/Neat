@@ -1,0 +1,56 @@
+services:
+  api:
+    build: ./api
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      DATA_FILE: /app/data/neat.json
+      PUBLIC_ORIGIN: https://neat.apps.thiering.org
+    volumes:
+      - neat-data:/app/data
+    networks:
+      - internal
+      - coolify
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=coolify
+      - traefik.http.routers.neat-api-http.rule=Host(`api.neat.apps.thiering.org`)
+      - traefik.http.routers.neat-api-http.entrypoints=http
+      - traefik.http.routers.neat-api-http.middlewares=neat-api-redirect
+      - traefik.http.middlewares.neat-api-redirect.redirectscheme.scheme=https
+      - traefik.http.routers.neat-api.rule=Host(`api.neat.apps.thiering.org`)
+      - traefik.http.routers.neat-api.entrypoints=https
+      - traefik.http.routers.neat-api.tls=true
+      - traefik.http.routers.neat-api.tls.certresolver=letsencrypt
+      - traefik.http.services.neat-api.loadbalancer.server.port=8080
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    volumes:
+      - ./models:/var/www/models:ro
+    networks:
+      - internal
+      - coolify
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=coolify
+      - traefik.http.routers.neat-web-http.rule=Host(`neat.apps.thiering.org`)
+      - traefik.http.routers.neat-web-http.entrypoints=http
+      - traefik.http.routers.neat-web-http.middlewares=neat-web-redirect
+      - traefik.http.middlewares.neat-web-redirect.redirectscheme.scheme=https
+      - traefik.http.routers.neat-web.rule=Host(`neat.apps.thiering.org`)
+      - traefik.http.routers.neat-web.entrypoints=https
+      - traefik.http.routers.neat-web.tls=true
+      - traefik.http.routers.neat-web.tls.certresolver=letsencrypt
+      - traefik.http.services.neat-web.loadbalancer.server.port=80
+
+volumes:
+  neat-data:
+
+networks:
+  internal:
+  coolify:
+    external: true

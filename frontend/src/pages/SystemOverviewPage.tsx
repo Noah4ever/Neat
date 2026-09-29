@@ -7,7 +7,6 @@ import { PageHeading } from "../components/SettingsPrimitives";
 import { QueryMessage } from "../components/QueryMessage";
 import { getDevice, getSystemStatus, restartDevice } from "../services/api";
 import { showApiError } from "../services/notifications";
-import { useDrinkSession } from "../state/useDrinkSession";
 import { createMachineWebSocket } from "../services/websocket";
 import type { StorageArea, SystemStatus } from "../types/device";
 const bytes = (value: number) =>
@@ -50,7 +49,6 @@ function StorageMeter({ label, value }: { label: string; value: StorageArea }) {
 }
 export function SystemOverviewPage() {
   const [confirmRestart, setConfirmRestart] = useState(false);
-  const { busy } = useDrinkSession();
   const restart = useMutation({
     mutationFn: restartDevice,
     onSuccess: () => {
@@ -186,7 +184,6 @@ export function SystemOverviewPage() {
       <section className="settings-group system-actions">
         <button
           className="settings-row settings-row--danger"
-          disabled={busy}
           onClick={() => setConfirmRestart(true)}
           type="button"
         >

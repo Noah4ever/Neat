@@ -27,6 +27,7 @@ public:
 
   bool isScanInProgress() const;
   bool isStationConnected() const;
+  bool testInternetAccess() const;
   std::string getStationSsid() const;
   std::string getAccessPointSsid() const;
   std::string getAccessPointPassword() const;

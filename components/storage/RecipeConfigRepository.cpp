@@ -185,6 +185,7 @@ bool RecipeConfigRepository::serialize(
                 || cJSON_AddNumberToObject(
                        jsonItem, "ingredientId", recipeItem.ingredientId) == nullptr
                 || cJSON_AddNumberToObject(jsonItem, "amountMl", recipeItem.amountMl) == nullptr
+                || cJSON_AddBoolToObject(jsonItem, "machineDispensed", recipeItem.machineDispensed) == nullptr
                 || !cJSON_AddItemToArray(items, jsonItem)) {
                 cJSON_Delete(jsonItem);
                 itemsValid = false;
@@ -395,13 +396,18 @@ bool RecipeConfigRepository::deserialize(
             const cJSON* amountMl = cJSON_IsObject(jsonItem)
                 ? cJSON_GetObjectItemCaseSensitive(jsonItem, "amountMl")
                 : nullptr;
+            const cJSON* machineDispensed = cJSON_IsObject(jsonItem)
+                ? cJSON_GetObjectItemCaseSensitive(jsonItem, "machineDispensed")
+                : nullptr;
             if (!isUint16(ingredientId) || !isUint16(amountMl)) {
                 return false;
             }
+            if (machineDispensed && !cJSON_IsBool(machineDispensed)) return false;
 
             parsedItems.push_back({
                 .ingredientId = static_cast<std::uint16_t>(ingredientId->valuedouble),
                 .amountMl = static_cast<std::uint16_t>(amountMl->valuedouble),
+                .machineDispensed = machineDispensed == nullptr || cJSON_IsTrue(machineDispensed),
             });
         }
 

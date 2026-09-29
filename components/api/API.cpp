@@ -1,8 +1,10 @@
 #include "api/API.hpp"
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -11,11 +13,18 @@
 
 #include "cJSON.h"
 #include "esp_app_desc.h"
+#include "esp_crt_bundle.h"
 #include "esp_err.h"
+#include "esp_http_client.h"
 #include "esp_http_server.h"
+#include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_spiffs.h"
 #include "esp_system.h"
+#include "esp_timer.h"
+#include "freertos/semphr.h"
 #include "recipe/RecipeResults.hpp"
 
 namespace {
@@ -31,6 +40,150 @@ using JsonStringPtr = std::unique_ptr<char, decltype(&cJSON_free)>;
 constexpr char kWebPartitionLabel[] = "web";
 constexpr char kWebBasePath[] = "/web";
 constexpr int kMaximumJsonBodySize = 16 * 1024;
+constexpr std::size_t kMaximumCloudResponseSize = 64 * 1024;
+constexpr char kDefaultCloudBaseUrl[] = "https://api.neat.apps.thiering.org";
+constexpr char kCloudLogTag[] = "neat_cloud";
+
+esp_err_t sendError(httpd_req_t *req, const char *status, const char *error);
+
+struct CloudResponse {
+  esp_err_t error = ESP_FAIL;
+  int status = 0;
+  int latencyMs = 0;
+  std::string body;
+};
+
+esp_err_t cloudEventHandler(esp_http_client_event_t *event);
+
+SemaphoreHandle_t cloudRequestMutex() {
+  static SemaphoreHandle_t mutex = xSemaphoreCreateMutex();
+  return mutex;
+}
+
+esp_http_client_handle_t cloudHttpClient(CloudResponse *response) {
+  static esp_http_client_handle_t client = nullptr;
+  if (!client) {
+    esp_http_client_config_t config = {};
+    config.url = kDefaultCloudBaseUrl;
+    config.timeout_ms = 12000;
+    config.event_handler = cloudEventHandler;
+    config.user_data = response;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+    config.user_agent = "Neat-ESP32/1";
+    config.keep_alive_enable = true;
+    config.keep_alive_idle = 30;
+    config.keep_alive_interval = 5;
+    config.keep_alive_count = 3;
+    client = esp_http_client_init(&config);
+  } else {
+    esp_http_client_set_user_data(client, response);
+  }
+  return client;
+}
+
+std::string machineId() {
+  std::uint8_t mac[6] = {};
+  if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
+    return "neat-unknown";
+  }
+  char value[18] = {};
+  std::snprintf(value, sizeof(value), "neat-%02x%02x%02x%02x%02x%02x", mac[0],
+                mac[1], mac[2], mac[3], mac[4], mac[5]);
+  return value;
+}
+
+bool safeCloudSegment(const std::string &value) {
+  return !value.empty() && value.size() <= 96 &&
+         value.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRS"
+                                 "TUVWXYZ0123456789-_") == std::string::npos;
+}
+
+esp_err_t cloudEventHandler(esp_http_client_event_t *event) {
+  auto *response = static_cast<CloudResponse *>(event->user_data);
+  if (event->event_id == HTTP_EVENT_ON_DATA && event->data_len > 0 &&
+      response->body.size() + static_cast<std::size_t>(event->data_len) <=
+          kMaximumCloudResponseSize) {
+    response->body.append(static_cast<const char *>(event->data),
+                          static_cast<std::size_t>(event->data_len));
+  }
+  return ESP_OK;
+}
+
+CloudResponse performCloudRequest(const std::string &url,
+                                  esp_http_client_method_t method,
+                                  const std::string &body = {}) {
+  CloudResponse response;
+  SemaphoreHandle_t mutex = cloudRequestMutex();
+  if (!mutex || xSemaphoreTake(mutex, pdMS_TO_TICKS(15000)) != pdTRUE) {
+    response.error = ESP_ERR_TIMEOUT;
+    ESP_LOGE(kCloudLogTag, "Cloud request lock timed out: %s", url.c_str());
+    return response;
+  }
+
+  esp_http_client_handle_t client = cloudHttpClient(&response);
+  if (!client) {
+    response.error = ESP_ERR_NO_MEM;
+    xSemaphoreGive(mutex);
+    return response;
+  }
+  esp_http_client_set_url(client, url.c_str());
+  esp_http_client_set_method(client, method);
+  esp_http_client_set_header(client, "Accept", "application/json");
+  if (!body.empty()) {
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, body.data(), body.size());
+  } else {
+    esp_http_client_set_post_field(client, nullptr, 0);
+  }
+  ESP_LOGI(kCloudLogTag, "Cloud request start: %s %s, body=%u bytes, heap=%lu",
+           method == HTTP_METHOD_GET ? "GET" : "POST", url.c_str(),
+           static_cast<unsigned>(body.size()),
+           static_cast<unsigned long>(esp_get_free_heap_size()));
+  const std::int64_t startedAt = esp_timer_get_time();
+  response.error = esp_http_client_perform(client);
+  response.latencyMs =
+      static_cast<int>((esp_timer_get_time() - startedAt) / 1000);
+  if (response.error == ESP_OK) {
+    response.status = esp_http_client_get_status_code(client);
+  }
+  const std::string preview = response.body.substr(0, 300);
+  ESP_LOGI(kCloudLogTag,
+           "Cloud request done: err=%s status=%d duration=%dms response=%u "
+           "bytes heap=%lu body=%s",
+           esp_err_to_name(response.error), response.status, response.latencyMs,
+           static_cast<unsigned>(response.body.size()),
+           static_cast<unsigned long>(esp_get_free_heap_size()),
+           preview.empty() ? "<empty>" : preview.c_str());
+  xSemaphoreGive(mutex);
+  return response;
+}
+
+std::string cloudBaseUrl(const cJSON *body) {
+  const cJSON *value =
+      body ? cJSON_GetObjectItemCaseSensitive(body, "baseUrl") : nullptr;
+  if (!cJSON_IsString(value) || !value->valuestring) {
+    return kDefaultCloudBaseUrl;
+  }
+  std::string base = value->valuestring;
+  while (base.ends_with('/'))
+    base.pop_back();
+  if (!base.starts_with("https://") || base.size() > 240) {
+    return {};
+  }
+  return base;
+}
+
+esp_err_t forwardCloudResponse(httpd_req_t *req,
+                               const CloudResponse &response) {
+  if (response.error != ESP_OK) {
+    return sendError(req, "502 Bad Gateway", "cloud_unreachable");
+  }
+  char status[32] = {};
+  std::snprintf(status, sizeof(status), "%d Cloud Response", response.status);
+  httpd_resp_set_status(req, status);
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_send(req, response.body.data(), response.body.size());
+}
 
 const char *contentTypeForPath(const std::string &path) {
   if (path.ends_with(".html")) {
@@ -174,11 +327,21 @@ bool readIdFromPath(const std::string &path, std::string_view prefix,
 cJSON *ingredientJson(const IngredientConfig &ingredient) {
   const char *category = "OTHER";
   switch (ingredient.category) {
-  case IngredientCategory::ALCOHOL: category = "ALCOHOL"; break;
-  case IngredientCategory::JUICE: category = "JUICE"; break;
-  case IngredientCategory::MIXER: category = "MIXER"; break;
-  case IngredientCategory::SYRUP: category = "SYRUP"; break;
-  case IngredientCategory::OTHER: category = "OTHER"; break;
+  case IngredientCategory::ALCOHOL:
+    category = "ALCOHOL";
+    break;
+  case IngredientCategory::JUICE:
+    category = "JUICE";
+    break;
+  case IngredientCategory::MIXER:
+    category = "MIXER";
+    break;
+  case IngredientCategory::SYRUP:
+    category = "SYRUP";
+    break;
+  case IngredientCategory::OTHER:
+    category = "OTHER";
+    break;
   }
   cJSON *json = cJSON_CreateObject();
   if (!json || !cJSON_AddNumberToObject(json, "id", ingredient.id) ||
@@ -191,14 +354,21 @@ cJSON *ingredientJson(const IngredientConfig &ingredient) {
 }
 
 bool readIngredientCategory(const cJSON *value, IngredientCategory &category) {
-  if (!cJSON_IsString(value) || !value->valuestring) return false;
+  if (!cJSON_IsString(value) || !value->valuestring)
+    return false;
   const std::string name = value->valuestring;
-  if (name == "ALCOHOL") category = IngredientCategory::ALCOHOL;
-  else if (name == "JUICE") category = IngredientCategory::JUICE;
-  else if (name == "MIXER") category = IngredientCategory::MIXER;
-  else if (name == "SYRUP") category = IngredientCategory::SYRUP;
-  else if (name == "OTHER") category = IngredientCategory::OTHER;
-  else return false;
+  if (name == "ALCOHOL")
+    category = IngredientCategory::ALCOHOL;
+  else if (name == "JUICE")
+    category = IngredientCategory::JUICE;
+  else if (name == "MIXER")
+    category = IngredientCategory::MIXER;
+  else if (name == "SYRUP")
+    category = IngredientCategory::SYRUP;
+  else if (name == "OTHER")
+    category = IngredientCategory::OTHER;
+  else
+    return false;
   return true;
 }
 
@@ -212,7 +382,7 @@ cJSON *recipeJson(const RecipeConfig &recipe,
       !steps || !cJSON_AddStringToObject(json, "name", recipe.name.c_str()) ||
       !cJSON_AddNumberToObject(json, "baseSizeMl", recipe.baseSizeMl) ||
       !cJSON_AddBoolToObject(json, "strengthAdjustmentAvailable",
-                            strengthAdjustmentAvailable)) {
+                             strengthAdjustmentAvailable)) {
     cJSON_Delete(json);
     cJSON_Delete(items);
     cJSON_Delete(steps);
@@ -233,12 +403,12 @@ cJSON *recipeJson(const RecipeConfig &recipe,
     return nullptr;
   }
 
-  const auto addOptionalString = [json](
-                                     const char *key,
-                                     const std::optional<std::string> &value) {
-    return value ? cJSON_AddStringToObject(json, key, value->c_str()) != nullptr
-                 : cJSON_AddNullToObject(json, key) != nullptr;
-  };
+  const auto addOptionalString =
+      [json](const char *key, const std::optional<std::string> &value) {
+        return value ? cJSON_AddStringToObject(json, key, value->c_str()) !=
+                           nullptr
+                     : cJSON_AddNullToObject(json, key) != nullptr;
+      };
   if (!addOptionalString("subtitle", recipe.subtitle) ||
       !addOptionalString("description", recipe.description)) {
     cJSON_Delete(items);
@@ -268,6 +438,8 @@ cJSON *recipeJson(const RecipeConfig &recipe,
     if (!itemJson ||
         !cJSON_AddNumberToObject(itemJson, "ingredientId", item.ingredientId) ||
         !cJSON_AddNumberToObject(itemJson, "amountMl", item.amountMl) ||
+        !cJSON_AddBoolToObject(itemJson, "machineDispensed",
+                               item.machineDispensed) ||
         !cJSON_AddItemToArray(items, itemJson)) {
       cJSON_Delete(itemJson);
       cJSON_Delete(items);
@@ -285,7 +457,7 @@ cJSON *recipeJson(const RecipeConfig &recipe,
   cJSON *uncalibrated = cJSON_CreateArray();
   if (!availabilityJson || !missing || !uncalibrated ||
       !cJSON_AddBoolToObject(availabilityJson, "available",
-                            availability.available)) {
+                             availability.available)) {
     cJSON_Delete(availabilityJson);
     cJSON_Delete(missing);
     cJSON_Delete(uncalibrated);
@@ -300,7 +472,7 @@ cJSON *recipeJson(const RecipeConfig &recipe,
   }
   cJSON_AddItemToObject(availabilityJson, "missingIngredientIds", missing);
   cJSON_AddItemToObject(availabilityJson, "uncalibratedIngredientIds",
-                       uncalibrated);
+                        uncalibrated);
   cJSON_AddItemToObject(json, "availability", availabilityJson);
   return json;
 }
@@ -364,15 +536,16 @@ cJSON *systemStatusJson(const SystemStatus &status) {
   cJSON_AddNumberToObject(root, "uptimeMs", status.uptimeMs);
   cJSON_AddNumberToObject(memory, "freeHeapBytes", status.freeHeapBytes);
   cJSON_AddNumberToObject(memory, "minimumFreeHeapBytes",
-                         status.minimumFreeHeapBytes);
+                          status.minimumFreeHeapBytes);
   cJSON_AddNumberToObject(memory, "largestFreeBlockBytes",
-                         status.largestFreeBlockBytes);
+                          status.largestFreeBlockBytes);
   cJSON_AddNumberToObject(cpu, "utilizationPercent",
-                         status.cpuUtilizationPercent);
+                          status.cpuUtilizationPercent);
   const auto addStorage = [storage](const char *name,
                                     const StorageUsage &usage) {
     cJSON *value = cJSON_CreateObject();
-    if (!value) return false;
+    if (!value)
+      return false;
     cJSON_AddNumberToObject(value, "totalBytes", usage.totalBytes);
     cJSON_AddNumberToObject(value, "usedBytes", usage.usedBytes);
     cJSON_AddItemToObject(storage, name, value);
@@ -390,12 +563,12 @@ cJSON *systemStatusJson(const SystemStatus &status) {
     return nullptr;
   }
   cJSON_AddStringToObject(network, "mode", status.wifiMode.c_str());
-  cJSON_AddBoolToObject(network, "stationConnected",
-                       status.stationConnected);
-  if (status.stationConnected) cJSON_AddNumberToObject(network, "rssi", status.rssi);
-  else cJSON_AddNullToObject(network, "rssi");
-  cJSON_AddBoolToObject(network, "accessPointActive",
-                       status.accessPointActive);
+  cJSON_AddBoolToObject(network, "stationConnected", status.stationConnected);
+  if (status.stationConnected)
+    cJSON_AddNumberToObject(network, "rssi", status.rssi);
+  else
+    cJSON_AddNullToObject(network, "rssi");
+  cJSON_AddBoolToObject(network, "accessPointActive", status.accessPointActive);
   cJSON_AddItemToObject(root, "memory", memory);
   cJSON_AddItemToObject(root, "cpu", cpu);
   cJSON_AddItemToObject(root, "storage", storage);
@@ -441,8 +614,10 @@ bool readRecipeFields(const cJSON *json, std::string &name,
   const auto readOptionalString = [](const cJSON *value,
                                      std::optional<std::string> &result) {
     result.reset();
-    if (!value || cJSON_IsNull(value)) return true;
-    if (!cJSON_IsString(value) || !value->valuestring) return false;
+    if (!value || cJSON_IsNull(value))
+      return true;
+    if (!cJSON_IsString(value) || !value->valuestring)
+      return false;
     result = value->valuestring;
     return true;
   };
@@ -454,8 +629,7 @@ bool readRecipeFields(const cJSON *json, std::string &name,
   preparationSteps.clear();
   cJSON *stepJson = nullptr;
   cJSON_ArrayForEach(stepJson, stepsJson) {
-    const cJSON *phase =
-        cJSON_GetObjectItemCaseSensitive(stepJson, "phase");
+    const cJSON *phase = cJSON_GetObjectItemCaseSensitive(stepJson, "phase");
     const cJSON *text = cJSON_GetObjectItemCaseSensitive(stepJson, "text");
     if (!cJSON_IsObject(stepJson) || !cJSON_IsString(phase) ||
         !phase->valuestring || !cJSON_IsString(text) || !text->valuestring ||
@@ -463,16 +637,19 @@ bool readRecipeFields(const cJSON *json, std::string &name,
       return false;
     }
     const std::string phaseName = phase->valuestring;
-    if (phaseName != "BEFORE" && phaseName != "AFTER") return false;
-    preparationSteps.push_back({
-        .phase = phaseName == "BEFORE" ? PreparationPhase::BEFORE
-                                       : PreparationPhase::AFTER,
-        .text = text->valuestring});
+    if (phaseName != "BEFORE" && phaseName != "AFTER")
+      return false;
+    preparationSteps.push_back({.phase = phaseName == "BEFORE"
+                                             ? PreparationPhase::BEFORE
+                                             : PreparationPhase::AFTER,
+                                .text = text->valuestring});
   }
   items.clear();
   cJSON *itemJson = nullptr;
   cJSON_ArrayForEach(itemJson, itemsJson) {
     RecipeItem item{};
+    const cJSON *machineDispensed =
+        cJSON_GetObjectItemCaseSensitive(itemJson, "machineDispensed");
     if (!cJSON_IsObject(itemJson) ||
         !readUnsigned(
             cJSON_GetObjectItemCaseSensitive(itemJson, "ingredientId"),
@@ -481,6 +658,9 @@ bool readRecipeFields(const cJSON *json, std::string &name,
                       item.amountMl)) {
       return false;
     }
+    if (machineDispensed && !cJSON_IsBool(machineDispensed))
+      return false;
+    item.machineDispensed = !machineDispensed || cJSON_IsTrue(machineDispensed);
     items.push_back(item);
   }
   return true;
@@ -547,8 +727,9 @@ API::API(MachineLogic &machineLogic, PumpControl &pumpControl,
       wifiController_(wifiController), recipeRepository_(recipeRepository),
       ingredientRepository_(ingredientRepository),
       pumpRepository_(pumpRepository),
-      bottleStateRepository_(bottleStateRepository), mediaStorage_(mediaStorage),
-      systemMonitor_(systemMonitor), developerControl_(developerControl) {}
+      bottleStateRepository_(bottleStateRepository),
+      mediaStorage_(mediaStorage), systemMonitor_(systemMonitor),
+      developerControl_(developerControl) {}
 
 esp_err_t API::start() {
   esp_err_t result = mountWebFileSystem();
@@ -595,10 +776,19 @@ esp_err_t API::start() {
         handleMachineEvent(event, pumpId);
       });
 
+  if (xTaskCreate(&API::cloudHeartbeatWork, "cloud-heartbeat", 10240, this, 4,
+                  &cloudHeartbeatTask_) != pdPASS) {
+    cloudHeartbeatTask_ = nullptr;
+  }
+
   return ESP_OK;
 }
 
 void API::stop() {
+  if (cloudHeartbeatTask_ != nullptr) {
+    vTaskDelete(cloudHeartbeatTask_);
+    cloudHeartbeatTask_ = nullptr;
+  }
   wifiController_.setScanFinishedCallback({});
   machineLogic_.setEventCallback({});
   systemMonitor_.setUpdateCallback({});
@@ -693,6 +883,7 @@ esp_err_t API::registerRoutes() {
                       &API::calibrationHandler},
       RouteDefinition{"/api/operation/*", HTTP_POST, &API::operationHandler},
       RouteDefinition{"/api/network/status", HTTP_GET, &API::networkHandler},
+      RouteDefinition{"/api/network/internet", HTTP_GET, &API::networkHandler},
       RouteDefinition{"/api/network/scan", HTTP_POST, &API::networkHandler},
       RouteDefinition{"/api/network/connect", HTTP_POST, &API::networkHandler},
       RouteDefinition{"/api/network/disconnect", HTTP_POST,
@@ -701,6 +892,7 @@ esp_err_t API::registerRoutes() {
                       &API::networkHandler},
       RouteDefinition{"/api/network/connection", HTTP_DELETE,
                       &API::networkHandler},
+      RouteDefinition{"/api/cloud/*", HTTP_POST, &API::cloudHandler},
       RouteDefinition{"/api/device", HTTP_GET, &API::deviceHandler},
       RouteDefinition{"/api/device/restart", HTTP_POST, &API::deviceHandler},
       RouteDefinition{"/api/settings/device", HTTP_GET,
@@ -861,8 +1053,7 @@ esp_err_t API::handleStatus(httpd_req_t *req) {
   JsonPtr json(cJSON_CreateObject(), cJSON_Delete);
   if (!json || !cJSON_AddStringToObject(json.get(), "state", stateText) ||
       !cJSON_AddNumberToObject(json.get(), "progress", status.progress) ||
-      !cJSON_AddBoolToObject(json.get(), "glassPresent",
-                            status.glassPresent)) {
+      !cJSON_AddBoolToObject(json.get(), "glassPresent", status.glassPresent)) {
     return sendError(req, "500 Internal Server Error", "json_failed");
   }
 
@@ -931,15 +1122,14 @@ esp_err_t API::handleRecipes(httpd_req_t *req) {
     std::uint16_t baseSizeMl = 0;
     std::vector<PreparationStep> preparationSteps;
     std::vector<RecipeItem> items;
-    if (!body || !readRecipeFields(body.get(), name, imageKey, subtitle,
-                                   description, baseSizeMl, preparationSteps,
-                                   items)) {
+    if (!body ||
+        !readRecipeFields(body.get(), name, imageKey, subtitle, description,
+                          baseSizeMl, preparationSteps, items)) {
       return sendError(req, "400 Bad Request", "invalid_recipe");
     }
-    const std::optional<RecipeConfig> created =
-        recipeRepository_.create(name, items, std::move(imageKey),
-                                 std::move(subtitle), std::move(description),
-                                 baseSizeMl, std::move(preparationSteps));
+    const std::optional<RecipeConfig> created = recipeRepository_.create(
+        name, items, std::move(imageKey), std::move(subtitle),
+        std::move(description), baseSizeMl, std::move(preparationSteps));
     if (!created) {
       return sendError(req, "500 Internal Server Error", "storage_failed");
     }
@@ -1004,9 +1194,8 @@ esp_err_t API::handleRecipes(httpd_req_t *req) {
       overrides.push_back(item);
     }
 
-    const StartRecipeResult result =
-        machineLogic_.startRecipe(id, sizeMl, strength, overrides,
-                                  cJSON_IsTrue(ignoreGlassJson));
+    const StartRecipeResult result = machineLogic_.startRecipe(
+        id, sizeMl, strength, overrides, cJSON_IsTrue(ignoreGlassJson));
     if (result != StartRecipeResult::SUCCESS) {
       if (result == StartRecipeResult::RECIPE_NOT_FOUND) {
         return sendError(req, "404 Not Found", "recipe_not_found");
@@ -1097,8 +1286,9 @@ esp_err_t API::handleIngredients(httpd_req_t *req) {
     JsonPtr body = readJsonBody(req);
     const cJSON *name =
         body ? cJSON_GetObjectItemCaseSensitive(body.get(), "name") : nullptr;
-    const cJSON *categoryJson = body
-        ? cJSON_GetObjectItemCaseSensitive(body.get(), "category") : nullptr;
+    const cJSON *categoryJson =
+        body ? cJSON_GetObjectItemCaseSensitive(body.get(), "category")
+             : nullptr;
     IngredientCategory category = IngredientCategory::OTHER;
     if (!cJSON_IsString(name) || !name->valuestring || !name->valuestring[0] ||
         !readIngredientCategory(categoryJson, category)) {
@@ -1137,8 +1327,8 @@ esp_err_t API::handleIngredients(httpd_req_t *req) {
   JsonPtr body = readJsonBody(req);
   const cJSON *name =
       body ? cJSON_GetObjectItemCaseSensitive(body.get(), "name") : nullptr;
-  const cJSON *categoryJson = body
-      ? cJSON_GetObjectItemCaseSensitive(body.get(), "category") : nullptr;
+  const cJSON *categoryJson =
+      body ? cJSON_GetObjectItemCaseSensitive(body.get(), "category") : nullptr;
   IngredientCategory category = IngredientCategory::OTHER;
   if (!cJSON_IsString(name) || !name->valuestring || !name->valuestring[0] ||
       !readIngredientCategory(categoryJson, category)) {
@@ -1339,11 +1529,14 @@ esp_err_t API::handleCalibration(httpd_req_t *req) {
     return sendError(req, "404 Not Found", "route_not_found");
   }
 
-  std::uint64_t measuredMl = 0;
-  if (!readUnsigned(cJSON_GetObjectItemCaseSensitive(body.get(), "measuredMl"),
-                    measuredMl)) {
+  const cJSON *measuredJson =
+      cJSON_GetObjectItemCaseSensitive(body.get(), "measuredMl");
+  if (!cJSON_IsNumber(measuredJson) ||
+      !std::isfinite(measuredJson->valuedouble) ||
+      measuredJson->valuedouble <= 0.0 || measuredJson->valuedouble > 10000.0) {
     return sendError(req, "400 Bad Request", "invalid_measurement");
   }
+  const float measuredMl = static_cast<float>(measuredJson->valuedouble);
   const MachineActionResult result =
       machineLogic_.finishedCalibrationPump(measuredMl);
   if (result == MachineActionResult::SUCCESS) {
@@ -1373,9 +1566,9 @@ esp_err_t API::handleOperation(httpd_req_t *req) {
   }
   if (path == "/api/operation/resume") {
     JsonPtr body = readJsonBody(req);
-    const cJSON *ignoreGlass = body
-        ? cJSON_GetObjectItemCaseSensitive(body.get(), "ignoreGlass")
-        : nullptr;
+    const cJSON *ignoreGlass =
+        body ? cJSON_GetObjectItemCaseSensitive(body.get(), "ignoreGlass")
+             : nullptr;
     if (ignoreGlass && !cJSON_IsBool(ignoreGlass)) {
       return sendError(req, "400 Bad Request", "invalid_glass_override");
     }
@@ -1408,51 +1601,86 @@ esp_err_t API::handleDeviceSettings(httpd_req_t *req) {
     const DeviceSettings settings = machineLogic_.getDeviceSettings();
     JsonPtr json(cJSON_CreateObject(), cJSON_Delete);
     cJSON *sizes = cJSON_CreateArray();
-    if (!json || !cJSON_AddBoolToObject(
-                     json.get(), "activateLedWhenPumpActive",
-                     settings.activateLedWhenPumpActive) ||
+    cJSON *successSound = cJSON_CreateArray();
+    cJSON *errorSound = cJSON_CreateArray();
+    if (!json ||
+        !cJSON_AddBoolToObject(json.get(), "activateLedWhenPumpActive",
+                               settings.activateLedWhenPumpActive) ||
         !cJSON_AddBoolToObject(json.get(), "requireGlassDetection",
-                              settings.requireGlassDetection) || !sizes ||
+                               settings.requireGlassDetection) ||
+        !sizes || !successSound || !errorSound ||
         !cJSON_AddNumberToObject(json.get(), "defaultDrinkSizeMl",
-                                settings.defaultDrinkSizeMl) ||
+                                 settings.defaultDrinkSizeMl) ||
         !cJSON_AddNumberToObject(json.get(), "alcoholStrengthLessFactor",
-                                settings.alcoholStrengthLessFactor) ||
+                                 settings.alcoholStrengthLessFactor) ||
         !cJSON_AddNumberToObject(json.get(), "alcoholStrengthMoreFactor",
-                                settings.alcoholStrengthMoreFactor)) {
+                                 settings.alcoholStrengthMoreFactor)) {
       cJSON_Delete(sizes);
       return sendError(req, "500 Internal Server Error", "json_failed");
     }
     for (const std::uint16_t size : settings.drinkSizesMl) {
       cJSON_AddItemToArray(sizes, cJSON_CreateNumber(size));
     }
+    const auto addSound = [](cJSON *array,
+                             const std::vector<BuzzerTone> &sound) {
+      for (const BuzzerTone &tone : sound) {
+        cJSON *item = cJSON_CreateObject();
+        if (!item ||
+            !cJSON_AddNumberToObject(item, "frequencyHz", tone.frequencyHz) ||
+            !cJSON_AddNumberToObject(item, "durationMs", tone.durationMs) ||
+            !cJSON_AddItemToArray(array, item)) {
+          cJSON_Delete(item);
+          return false;
+        }
+      }
+      return true;
+    };
+    if (!addSound(successSound, settings.successSound) ||
+        !addSound(errorSound, settings.errorSound)) {
+      cJSON_Delete(successSound);
+      cJSON_Delete(errorSound);
+      return sendError(req, "500 Internal Server Error", "json_failed");
+    }
     cJSON_AddItemToObject(json.get(), "drinkSizesMl", sizes);
+    cJSON_AddItemToObject(json.get(), "successSound", successSound);
+    cJSON_AddItemToObject(json.get(), "errorSound", errorSound);
     return sendJson(req, json.get());
   }
 
   JsonPtr body = readJsonBody(req);
-  const cJSON *activateLed =
-      body ? cJSON_GetObjectItemCaseSensitive(
-                 body.get(), "activateLedWhenPumpActive")
+  const cJSON *activateLed = body ? cJSON_GetObjectItemCaseSensitive(
+                                        body.get(), "activateLedWhenPumpActive")
+                                  : nullptr;
+  const cJSON *requireGlass = body ? cJSON_GetObjectItemCaseSensitive(
+                                         body.get(), "requireGlassDetection")
+                                   : nullptr;
+  const cJSON *sizesJson =
+      body ? cJSON_GetObjectItemCaseSensitive(body.get(), "drinkSizesMl")
            : nullptr;
-  const cJSON *requireGlass = body
-      ? cJSON_GetObjectItemCaseSensitive(body.get(), "requireGlassDetection")
-      : nullptr;
-  const cJSON *sizesJson = body
-      ? cJSON_GetObjectItemCaseSensitive(body.get(), "drinkSizesMl") : nullptr;
-  const cJSON *defaultSizeJson = body
-      ? cJSON_GetObjectItemCaseSensitive(body.get(), "defaultDrinkSizeMl") : nullptr;
-  const cJSON *lessJson = body
-      ? cJSON_GetObjectItemCaseSensitive(body.get(), "alcoholStrengthLessFactor") : nullptr;
-  const cJSON *moreJson = body
-      ? cJSON_GetObjectItemCaseSensitive(body.get(), "alcoholStrengthMoreFactor") : nullptr;
+  const cJSON *defaultSizeJson =
+      body ? cJSON_GetObjectItemCaseSensitive(body.get(), "defaultDrinkSizeMl")
+           : nullptr;
+  const cJSON *lessJson = body ? cJSON_GetObjectItemCaseSensitive(
+                                     body.get(), "alcoholStrengthLessFactor")
+                               : nullptr;
+  const cJSON *moreJson = body ? cJSON_GetObjectItemCaseSensitive(
+                                     body.get(), "alcoholStrengthMoreFactor")
+                               : nullptr;
+  const cJSON *successSoundJson =
+      body ? cJSON_GetObjectItemCaseSensitive(body.get(), "successSound")
+           : nullptr;
+  const cJSON *errorSoundJson =
+      body ? cJSON_GetObjectItemCaseSensitive(body.get(), "errorSound")
+           : nullptr;
   std::uint16_t defaultSize = 0;
   if (!cJSON_IsBool(activateLed) || !cJSON_IsBool(requireGlass) ||
-      !cJSON_IsArray(sizesJson) ||
-      cJSON_GetArraySize(sizesJson) <= 0 || cJSON_GetArraySize(sizesJson) > 16 ||
+      !cJSON_IsArray(sizesJson) || cJSON_GetArraySize(sizesJson) <= 0 ||
+      cJSON_GetArraySize(sizesJson) > 16 ||
       !readUnsigned(defaultSizeJson, defaultSize) ||
       !cJSON_IsNumber(lessJson) || !cJSON_IsNumber(moreJson) ||
       !std::isfinite(lessJson->valuedouble) ||
-      !std::isfinite(moreJson->valuedouble)) {
+      !std::isfinite(moreJson->valuedouble) ||
+      !cJSON_IsArray(successSoundJson) || !cJSON_IsArray(errorSoundJson)) {
     return sendError(req, "400 Bad Request", "invalid_device_settings");
   }
 
@@ -1466,6 +1694,30 @@ esp_err_t API::handleDeviceSettings(httpd_req_t *req) {
     sizes.push_back(size);
   }
   std::sort(sizes.begin(), sizes.end());
+  const auto readSound = [](const cJSON *array,
+                            std::vector<BuzzerTone> &sound) {
+    const int count = cJSON_GetArraySize(array);
+    if (count < 1 || count > 12)
+      return false;
+    cJSON *item = nullptr;
+    cJSON_ArrayForEach(item, array) {
+      BuzzerTone tone{};
+      if (!readUnsigned(cJSON_GetObjectItemCaseSensitive(item, "frequencyHz"),
+                        tone.frequencyHz) ||
+          !readUnsigned(cJSON_GetObjectItemCaseSensitive(item, "durationMs"),
+                        tone.durationMs) ||
+          tone.frequencyHz < 100 || tone.frequencyHz > 5000 ||
+          tone.durationMs < 20 || tone.durationMs > 2000)
+        return false;
+      sound.push_back(tone);
+    }
+    return true;
+  };
+  std::vector<BuzzerTone> successSound;
+  std::vector<BuzzerTone> errorSound;
+  if (!readSound(successSoundJson, successSound) ||
+      !readSound(errorSoundJson, errorSound))
+    return sendError(req, "400 Bad Request", "invalid_device_settings");
   if (std::adjacent_find(sizes.begin(), sizes.end()) != sizes.end() ||
       std::find(sizes.begin(), sizes.end(), defaultSize) == sizes.end() ||
       lessJson->valuedouble <= 0.0 || lessJson->valuedouble >= 1.0 ||
@@ -1480,7 +1732,10 @@ esp_err_t API::handleDeviceSettings(httpd_req_t *req) {
       .defaultDrinkSizeMl = defaultSize,
       .alcoholStrengthLessFactor = static_cast<float>(lessJson->valuedouble),
       .alcoholStrengthMoreFactor = static_cast<float>(moreJson->valuedouble)};
-  return machineLogic_.updateDeviceSettings(settings)
+  DeviceSettings completeSettings = settings;
+  completeSettings.successSound = std::move(successSound);
+  completeSettings.errorSound = std::move(errorSound);
+  return machineLogic_.updateDeviceSettings(completeSettings)
              ? sendNoContent(req)
              : sendError(req, "500 Internal Server Error", "storage_failed");
 }
@@ -1535,10 +1790,10 @@ esp_err_t API::handleBottles(httpd_req_t *req) {
     return sendError(req, "400 Bad Request", "invalid_bottle_state");
   }
 
-  const BottleState bottle{
-      .pumpId = pumpId,
-      .capacityMl = capacityMl,
-      .remainingMl = static_cast<float>(remainingMl->valuedouble)};
+  const BottleState bottle{.pumpId = pumpId,
+                           .capacityMl = capacityMl,
+                           .remainingMl =
+                               static_cast<float>(remainingMl->valuedouble)};
   return bottleStateRepository_.update(bottle)
              ? sendNoContent(req)
              : sendError(req, "500 Internal Server Error", "storage_failed");
@@ -1551,9 +1806,8 @@ esp_err_t API::mediaHandler(httpd_req_t *req) {
 esp_err_t API::handleMedia(httpd_req_t *req) {
   const std::string path = requestPath(req);
   if (path == "/api/media/images" && req->method == HTTP_POST) {
-    if (req->content_len <= 0 ||
-        static_cast<std::size_t>(req->content_len) >
-            MediaStorage::MAX_IMAGE_BYTES) {
+    if (req->content_len <= 0 || static_cast<std::size_t>(req->content_len) >
+                                     MediaStorage::MAX_IMAGE_BYTES) {
       return sendError(req, "413 Payload Too Large", "image_too_large");
     }
     char contentType[32] = {};
@@ -1574,22 +1828,23 @@ esp_err_t API::handleMedia(httpd_req_t *req) {
       id = mediaStorage_.generateImageId();
     } while (mediaStorage_.imageExists(id));
 
-    const bool stored = mediaStorage_.storeImage(
-        id, static_cast<std::size_t>(req->content_len),
-        [req](char *buffer, std::size_t size) {
-          int received = 0;
-          do {
-            received = httpd_req_recv(req, buffer, size);
-          } while (received == HTTPD_SOCK_ERR_TIMEOUT);
-          return received;
-        });
+    const bool stored =
+        mediaStorage_.storeImage(id, static_cast<std::size_t>(req->content_len),
+                                 [req](char *buffer, std::size_t size) {
+                                   int received = 0;
+                                   do {
+                                     received =
+                                         httpd_req_recv(req, buffer, size);
+                                   } while (received == HTTPD_SOCK_ERR_TIMEOUT);
+                                   return received;
+                                 });
     if (!stored) {
       return sendError(req, "507 Insufficient Storage", "media_storage_full");
     }
     JsonPtr json(cJSON_CreateObject(), cJSON_Delete);
     const std::string imageKey = "media:" + id;
-    if (!json || !cJSON_AddStringToObject(json.get(), "imageKey",
-                                         imageKey.c_str())) {
+    if (!json ||
+        !cJSON_AddStringToObject(json.get(), "imageKey", imageKey.c_str())) {
       mediaStorage_.removeImage(id);
       return sendError(req, "500 Internal Server Error", "json_failed");
     }
@@ -1607,15 +1862,15 @@ esp_err_t API::handleMedia(httpd_req_t *req) {
     return sendError(req, "404 Not Found", "image_not_found");
   }
   if (req->method == HTTP_GET) {
-    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=31536000, immutable");
+    httpd_resp_set_hdr(req, "Cache-Control",
+                       "public, max-age=31536000, immutable");
     return sendFile(req, mediaStorage_.imagePath(id));
   }
 
   const std::string imageKey = "media:" + id;
   const std::vector<RecipeConfig> recipes = recipeRepository_.loadAll();
   const bool inUse = std::any_of(
-      recipes.begin(), recipes.end(),
-      [&imageKey](const RecipeConfig &recipe) {
+      recipes.begin(), recipes.end(), [&imageKey](const RecipeConfig &recipe) {
         return recipe.imageKey && *recipe.imageKey == imageKey;
       });
   if (inUse) {
@@ -1623,7 +1878,8 @@ esp_err_t API::handleMedia(httpd_req_t *req) {
   }
   return mediaStorage_.removeImage(id)
              ? sendNoContent(req)
-             : sendError(req, "500 Internal Server Error", "media_delete_failed");
+             : sendError(req, "500 Internal Server Error",
+                         "media_delete_failed");
 }
 
 esp_err_t API::systemHandler(httpd_req_t *req) {
@@ -1648,7 +1904,8 @@ void API::handleSystemStatus(const SystemStatus &status) {
   }
   cJSON_AddItemToObject(root.get(), "status", statusJson);
   JsonStringPtr text(cJSON_PrintUnformatted(root.get()), cJSON_free);
-  if (text) sendWebSocketMessage(text.get());
+  if (text)
+    sendWebSocketMessage(text.get());
 }
 
 esp_err_t API::developerHandler(httpd_req_t *req) {
@@ -1661,18 +1918,26 @@ esp_err_t API::handleDeveloper(httpd_req_t *req) {
     const MachineStatus machine = machineLogic_.getStatus();
     const auto stateName = [&machine]() {
       switch (machine.state) {
-      case MachineOperationState::RUNNING: return "running";
-      case MachineOperationState::PAUSED: return "paused";
-      case MachineOperationState::FINISHED: return "finished";
-      case MachineOperationState::STOPPED: return "stopped";
-      case MachineOperationState::IDLE: return "idle";
+      case MachineOperationState::RUNNING:
+        return "running";
+      case MachineOperationState::PAUSED:
+        return "paused";
+      case MachineOperationState::FINISHED:
+        return "finished";
+      case MachineOperationState::STOPPED:
+        return "stopped";
+      case MachineOperationState::IDLE:
+        return "idle";
       }
       return "idle";
     };
     const char *kind = "none";
-    if (machine.kind == MachineOperationKind::DRINK) kind = "drink";
-    else if (machine.kind == MachineOperationKind::CLEANING) kind = "cleaning";
-    else if (machine.kind == MachineOperationKind::CALIBRATION) kind = "calibration";
+    if (machine.kind == MachineOperationKind::DRINK)
+      kind = "drink";
+    else if (machine.kind == MachineOperationKind::CLEANING)
+      kind = "cleaning";
+    else if (machine.kind == MachineOperationKind::CALIBRATION)
+      kind = "calibration";
 
     JsonPtr root(cJSON_CreateObject(), cJSON_Delete);
     cJSON *machineJson = cJSON_CreateObject();
@@ -1685,7 +1950,7 @@ esp_err_t API::handleDeveloper(httpd_req_t *req) {
       return sendError(req, "500 Internal Server Error", "json_failed");
     }
     cJSON_AddBoolToObject(root.get(), "glassPresent",
-                         developerControl_.glassPresent());
+                          developerControl_.glassPresent());
     cJSON_AddStringToObject(machineJson, "kind", kind);
     cJSON_AddStringToObject(machineJson, "state", stateName());
     cJSON_AddBoolToObject(
@@ -1697,9 +1962,10 @@ esp_err_t API::handleDeveloper(httpd_req_t *req) {
     cJSON_AddItemToObject(root.get(), "machine", machineJson);
     for (const PumpConfig &pump : pumpRepository_.loadAll()) {
       cJSON *value = pumpJson(pump);
-      if (!value) return sendError(req, "500 Internal Server Error", "json_failed");
+      if (!value)
+        return sendError(req, "500 Internal Server Error", "json_failed");
       cJSON_AddBoolToObject(value, "running",
-                           pumpControl_.isPumpRunning(pump.id));
+                            pumpControl_.isPumpRunning(pump.id));
       cJSON_AddItemToArray(pumpsJson, value);
     }
     for (const BottleState &bottle : bottleStateRepository_.loadAll()) {
@@ -1711,7 +1977,8 @@ esp_err_t API::handleDeveloper(httpd_req_t *req) {
   }
 
   const auto resultResponse = [req](DeveloperResult result) {
-    if (result == DeveloperResult::SUCCESS) return sendNoContent(req);
+    if (result == DeveloperResult::SUCCESS)
+      return sendNoContent(req);
     if (result == DeveloperResult::MACHINE_BUSY)
       return sendError(req, "409 Conflict", "machine_busy");
     if (result == DeveloperResult::PUMP_NOT_FOUND)
@@ -1732,9 +1999,9 @@ esp_err_t API::handleDeveloper(httpd_req_t *req) {
     if (suffix == "/test") {
       JsonPtr body = readJsonBody(req);
       std::uint32_t durationMs = 0;
-      if (!body || !readUnsigned(
-                       cJSON_GetObjectItemCaseSensitive(body.get(), "durationMs"),
-                       durationMs)) {
+      if (!body || !readUnsigned(cJSON_GetObjectItemCaseSensitive(body.get(),
+                                                                  "durationMs"),
+                                 durationMs)) {
         return sendError(req, "400 Bad Request", "invalid_duration");
       }
       return resultResponse(developerControl_.testPump(pumpId, durationMs));
@@ -1748,8 +2015,8 @@ esp_err_t API::handleDeveloper(httpd_req_t *req) {
   if (readIdFromPath(path, "/api/developer/leds/", pumpId, suffix) &&
       suffix.empty()) {
     JsonPtr body = readJsonBody(req);
-    const cJSON *state = body
-        ? cJSON_GetObjectItemCaseSensitive(body.get(), "state") : nullptr;
+    const cJSON *state =
+        body ? cJSON_GetObjectItemCaseSensitive(body.get(), "state") : nullptr;
     if (!cJSON_IsBool(state)) {
       return sendError(req, "400 Bad Request", "invalid_led_state");
     }
@@ -1764,15 +2031,18 @@ esp_err_t API::handleDeveloper(httpd_req_t *req) {
   }
   if (path == "/api/developer/buzzer/test") {
     JsonPtr body = readJsonBody(req);
-    const cJSON *melody = body
-        ? cJSON_GetObjectItemCaseSensitive(body.get(), "melody") : nullptr;
+    const cJSON *melody =
+        body ? cJSON_GetObjectItemCaseSensitive(body.get(), "melody") : nullptr;
     if (!cJSON_IsString(melody) || !melody->valuestring) {
       return sendError(req, "400 Bad Request", "invalid_melody");
     }
     const std::string value = melody->valuestring;
-    if (value == "success") developerControl_.playSuccess();
-    else if (value == "error") developerControl_.playError();
-    else return sendError(req, "400 Bad Request", "invalid_melody");
+    if (value == "success")
+      developerControl_.playSuccess();
+    else if (value == "error")
+      developerControl_.playError();
+    else
+      return sendError(req, "400 Bad Request", "invalid_melody");
     return sendNoContent(req);
   }
   return sendError(req, "404 Not Found", "route_not_found");
@@ -1784,6 +2054,44 @@ esp_err_t API::networkHandler(httpd_req_t *req) {
 
 esp_err_t API::handleNetwork(httpd_req_t *req) {
   const std::string path = requestPath(req);
+  if (path == "/api/network/internet") {
+    static std::int64_t cachedAtUs = 0;
+    static bool cachedDnsResolved = false;
+    static CloudResponse cachedCloud;
+    const std::int64_t nowUs = esp_timer_get_time();
+    bool dnsResolved = cachedDnsResolved;
+    CloudResponse cloud = cachedCloud;
+    if (nowUs - cachedAtUs >= 5000000 || cachedAtUs == 0) {
+      dnsResolved = wifiController_.testInternetAccess();
+      cloud = {};
+      if (dnsResolved) {
+        if (std::time(nullptr) < 1700000000) {
+          esp_netif_sntp_sync_wait(pdMS_TO_TICKS(5000));
+        }
+        cloud = performCloudRequest(
+            std::string(kDefaultCloudBaseUrl) + "/api/health", HTTP_METHOD_GET);
+      }
+      cachedAtUs = nowUs;
+      cachedDnsResolved = dnsResolved;
+      cachedCloud = cloud;
+    } else {
+      ESP_LOGI(kCloudLogTag, "Internet test: using cached result");
+    }
+    const bool cloudReachable =
+        cloud.error == ESP_OK && cloud.status >= 200 && cloud.status < 300;
+    JsonPtr json(cJSON_CreateObject(), cJSON_Delete);
+    if (!json ||
+        !cJSON_AddBoolToObject(json.get(), "connected",
+                               wifiController_.isStationConnected()) ||
+        !cJSON_AddBoolToObject(json.get(), "dnsResolved", dnsResolved) ||
+        !cJSON_AddBoolToObject(json.get(), "cloudReachable", cloudReachable) ||
+        !cJSON_AddBoolToObject(json.get(), "reachable", cloudReachable) ||
+        !cJSON_AddNumberToObject(json.get(), "statusCode", cloud.status) ||
+        !cJSON_AddNumberToObject(json.get(), "latencyMs", cloud.latencyMs)) {
+      return sendError(req, "500 Internal Server Error", "json_failed");
+    }
+    return sendJson(req, json.get());
+  }
   if (path == "/api/network/scan") {
     return handleNetworkScan(req);
   }
@@ -1867,6 +2175,124 @@ esp_err_t API::handleNetwork(httpd_req_t *req) {
   return sendJson(req, json.get());
 }
 
+esp_err_t API::cloudHandler(httpd_req_t *req) {
+  return static_cast<API *>(req->user_ctx)->handleCloud(req);
+}
+
+esp_err_t API::handleCloud(httpd_req_t *req) {
+  ESP_LOGI(kCloudLogTag, "HandleCloud");
+  const std::string path = requestPath(req);
+  ESP_LOGI(kCloudLogTag, "Local cloud route: %s machine=%s heap=%lu",
+           path.c_str(), machineId().c_str(),
+           static_cast<unsigned long>(esp_get_free_heap_size()));
+  if (!wifiController_.isStationConnected()) {
+    ESP_LOGW(kCloudLogTag, "Rejected %s: Wi-Fi station is disconnected",
+             path.c_str());
+    return sendError(req, "503 Service Unavailable", "internet_unavailable");
+  }
+  if (std::time(nullptr) < 1700000000) {
+    esp_netif_sntp_sync_wait(pdMS_TO_TICKS(5000));
+  }
+  JsonPtr body = readJsonBody(req);
+  if (!body || !cJSON_IsObject(body.get())) {
+    return sendError(req, "400 Bad Request", "invalid_cloud_request");
+  }
+  const std::string baseUrl = cloudBaseUrl(body.get());
+  if (baseUrl.empty()) {
+    return sendError(req, "400 Bad Request", "invalid_cloud_url");
+  }
+
+  const cJSON *machineValue =
+      cJSON_GetObjectItemCaseSensitive(body.get(), "machineId");
+  std::string id = machineId();
+  if (cJSON_IsString(machineValue) && machineValue->valuestring &&
+      safeCloudSegment(machineValue->valuestring)) {
+    // The stable hardware ID wins for pairing and heartbeat. The supplied ID
+    // remains accepted for queue entries created before this firmware update.
+    if (path == "/api/cloud/queue" || path == "/api/cloud/queue/claim") {
+      id = machineValue->valuestring;
+    }
+  }
+
+  if (path == "/api/cloud/pair") {
+    const cJSON *codeValue =
+        cJSON_GetObjectItemCaseSensitive(body.get(), "code");
+    if (!cJSON_IsString(codeValue) || !codeValue->valuestring) {
+      return sendError(req, "400 Bad Request", "invalid_pairing_code");
+    }
+    std::string code = codeValue->valuestring;
+    code.erase(std::remove_if(
+                   code.begin(), code.end(),
+                   [](unsigned char value) { return !std::isdigit(value); }),
+               code.end());
+    if (code.size() != 6) {
+      ESP_LOGW(kCloudLogTag, "Pairing rejected locally: code has %u digits",
+               static_cast<unsigned>(code.size()));
+      return sendError(req, "400 Bad Request", "invalid_pairing_code");
+    }
+    ESP_LOGI(kCloudLogTag, "Pairing start: code=%s machine=%s cloud=%s",
+             code.c_str(), machineId().c_str(), baseUrl.c_str());
+    JsonPtr payload(cJSON_CreateObject(), cJSON_Delete);
+    cJSON_AddStringToObject(payload.get(), "machineId", machineId().c_str());
+    cJSON_AddStringToObject(payload.get(), "name", "Neat");
+    JsonStringPtr serialized(cJSON_PrintUnformatted(payload.get()), cJSON_free);
+    return forwardCloudResponse(
+        req, performCloudRequest(baseUrl + "/api/pairings/" + code + "/claim",
+                                 HTTP_METHOD_POST, serialized.get()));
+  }
+
+  cJSON_DeleteItemFromObjectCaseSensitive(body.get(), "baseUrl");
+  cJSON_DeleteItemFromObjectCaseSensitive(body.get(), "machineId");
+  JsonStringPtr serialized(cJSON_PrintUnformatted(body.get()), cJSON_free);
+  if (!serialized) {
+    return sendError(req, "500 Internal Server Error", "json_failed");
+  }
+  if (path == "/api/cloud/heartbeat" || path == "/api/cloud/sync") {
+    const char *suffix = path == "/api/cloud/sync" ? "/sync" : "/heartbeat";
+    return forwardCloudResponse(
+        req,
+        performCloudRequest(baseUrl + "/v1/machines/" + machineId() + suffix,
+                            HTTP_METHOD_POST, serialized.get()));
+  }
+  if (path == "/api/cloud/queue") {
+    if (!safeCloudSegment(id)) {
+      return sendError(req, "400 Bad Request", "invalid_machine_id");
+    }
+    return forwardCloudResponse(
+        req, performCloudRequest(baseUrl + "/v1/machines/" + id + "/queue",
+                                 HTTP_METHOD_GET));
+  }
+  if (path == "/api/cloud/queue/claim") {
+    const cJSON *entryValue =
+        cJSON_GetObjectItemCaseSensitive(body.get(), "entryId");
+    if (!safeCloudSegment(id) || !cJSON_IsString(entryValue) ||
+        !entryValue->valuestring ||
+        !safeCloudSegment(entryValue->valuestring)) {
+      return sendError(req, "400 Bad Request", "invalid_queue_entry");
+    }
+    return forwardCloudResponse(
+        req, performCloudRequest(baseUrl + "/v1/machines/" + id + "/queue/" +
+                                     entryValue->valuestring + "/claim",
+                                 HTTP_METHOD_POST, "{}"));
+  }
+  return sendError(req, "404 Not Found", "route_not_found");
+}
+
+void API::cloudHeartbeatWork(void *arg) {
+  auto *api = static_cast<API *>(arg);
+  while (true) {
+    if (api->wifiController_.isStationConnected()) {
+      if (std::time(nullptr) < 1700000000) {
+        esp_netif_sntp_sync_wait(pdMS_TO_TICKS(5000));
+      }
+      performCloudRequest(std::string(kDefaultCloudBaseUrl) + "/v1/machines/" +
+                              machineId() + "/heartbeat",
+                          HTTP_METHOD_POST, "{}");
+    }
+    vTaskDelay(pdMS_TO_TICKS(20000));
+  }
+}
+
 esp_err_t API::deviceHandler(httpd_req_t *req) {
   return static_cast<API *>(req->user_ctx)->handleDevice(req);
 }
@@ -1885,7 +2311,9 @@ esp_err_t API::handleDevice(httpd_req_t *req) {
 
   const esp_app_desc_t *description = esp_app_get_description();
   JsonPtr json(cJSON_CreateObject(), cJSON_Delete);
-  if (!json || !cJSON_AddStringToObject(json.get(), "name", "Neat") ||
+  if (!json ||
+      !cJSON_AddStringToObject(json.get(), "id", machineId().c_str()) ||
+      !cJSON_AddStringToObject(json.get(), "name", "Neat") ||
       !cJSON_AddStringToObject(json.get(), "model", CONFIG_IDF_TARGET) ||
       !cJSON_AddStringToObject(json.get(), "version", description->version)) {
     return sendError(req, "500 Internal Server Error", "json_failed");
@@ -2024,8 +2452,8 @@ void API::handleMachineEvent(MachineEvent event,
       break;
     }
     JsonPtr json(cJSON_CreateObject(), cJSON_Delete);
-    if (!json || !cJSON_AddStringToObject(json.get(), "type",
-                                          "machine_warning") ||
+    if (!json ||
+        !cJSON_AddStringToObject(json.get(), "type", "machine_warning") ||
         !cJSON_AddStringToObject(json.get(), "warning",
                                  "bottle_may_be_empty") ||
         !cJSON_AddNumberToObject(json.get(), "pumpId", *pumpId)) {

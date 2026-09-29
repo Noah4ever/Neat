@@ -12,6 +12,7 @@ import {
   saveIngredient,
 } from "../services/api";
 import { showApiError } from "../services/notifications";
+import { mockIngredientSeed } from "../data/mockSeed";
 import type { Ingredient } from "../types/device";
 
 export function IngredientsPage() {
@@ -41,6 +42,12 @@ export function IngredientsPage() {
     },
     onError: showApiError,
   });
+  const quickAdd = useMutation({
+    mutationFn: (ingredient: Ingredient) => saveIngredient({ ...ingredient, id: 0 }, true),
+    onSuccess: () => void cache.invalidateQueries({ queryKey: ["ingredients"] }),
+    onError: showApiError,
+  });
+  const suggested = mockIngredientSeed.filter((seed) => !query.data?.some((item) => item.name.toLocaleLowerCase() === seed.name.toLocaleLowerCase()));
   return (
     <div className="settings-page">
       <PageHeading
@@ -63,6 +70,7 @@ export function IngredientsPage() {
         onChange={setSearch}
         placeholder="Search ingredients"
       />
+      {!!suggested.length && !search && <section className="ingredient-suggestions"><h2>Suggested ingredients</h2><p className="muted">Tap an ingredient to add it.</p><div>{suggested.slice(0, 10).map((item) => <button disabled={quickAdd.isPending} key={item.id} onClick={() => quickAdd.mutate(item)} type="button"><Plus size={16} /> {item.name}</button>)}</div></section>}
       {!query.data ? (
         <QueryMessage query={query} />
       ) : (

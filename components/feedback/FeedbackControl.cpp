@@ -68,11 +68,18 @@ void FeedbackControl::resetTestPumpLeds() {
 }
 
 void FeedbackControl::playSuccess() {
-  startMelody(SUCCESS_MELODY.data(), SUCCESS_MELODY.size());
+  startMelody(successMelody_.data(), successMelody_.size());
 }
 
 void FeedbackControl::playError() {
-  startMelody(ERROR_MELODY.data(), ERROR_MELODY.size());
+  startMelody(errorMelody_.data(), errorMelody_.size());
+}
+
+void FeedbackControl::setSounds(const std::vector<BuzzerTone> &success,
+                                const std::vector<BuzzerTone> &error) {
+  stopSound();
+  successMelody_ = success;
+  errorMelody_ = error;
 }
 
 void FeedbackControl::stopSound() {
@@ -83,7 +90,7 @@ void FeedbackControl::stopSound() {
   currentToneIndex_ = 0;
 }
 
-void FeedbackControl::startMelody(const Tone *melody, std::size_t size) {
+void FeedbackControl::startMelody(const BuzzerTone *melody, std::size_t size) {
 
   buzzer_.stop();
 
@@ -99,7 +106,7 @@ void FeedbackControl::startMelody(const Tone *melody, std::size_t size) {
 }
 
 void FeedbackControl::startCurrentTone() {
-  const Tone &tone = currentMelody_[currentToneIndex_];
+  const BuzzerTone &tone = currentMelody_[currentToneIndex_];
 
   buzzer_.playTone(tone.frequencyHz, tone.durationMs);
 }

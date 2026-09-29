@@ -79,7 +79,7 @@ public:
 
   MachineActionResult startCalibrationPump(std::uint8_t pumpId,
                                            std::uint64_t durationMs);
-  MachineActionResult finishedCalibrationPump(std::uint64_t measuredMl);
+  MachineActionResult finishedCalibrationPump(float measuredMl);
 
   void stopCurrentOperation();
   MachineActionResult resumeCurrentOperation(bool ignoreGlass = false);

@@ -8,6 +8,8 @@
 #include "developer/DeveloperControl.hpp"
 #include "esp_err.h"
 #include "esp_http_server.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "machine/MachineLogic.hpp"
 #include "media/MediaStorage.hpp"
 #include "pump/PumpControl.hpp"
@@ -46,6 +48,7 @@ private:
 
   httpd_handle_t server_ = nullptr;
   bool webFileSystemMounted_ = false;
+  TaskHandle_t cloudHeartbeatTask_ = nullptr;
 
   esp_err_t mountWebFileSystem();
   esp_err_t registerRoutes();
@@ -82,6 +85,10 @@ private:
 
   static esp_err_t networkHandler(httpd_req_t *req);
   esp_err_t handleNetwork(httpd_req_t *req);
+
+  static esp_err_t cloudHandler(httpd_req_t *req);
+  esp_err_t handleCloud(httpd_req_t *req);
+  static void cloudHeartbeatWork(void *arg);
 
   static esp_err_t deviceHandler(httpd_req_t *req);
   esp_err_t handleDevice(httpd_req_t *req);

@@ -14,7 +14,13 @@ export type BackendErrorKey =
   | "unsupported_image_type"
   | "no_saved_network"
   | "disconnect_failed"
-  | "invalid_device_settings";
+  | "invalid_device_settings"
+  | "invalid_measurement"
+  | "calibration_not_ready"
+  | "calibration_save_failed"
+  | "calibration_start_failed"
+  | "pump_not_found"
+  | "connection_lost";
 
 export interface UserMessage {
   title: string;
@@ -85,6 +91,30 @@ export const backendErrorMessages: Record<BackendErrorKey, UserMessage> = {
   invalid_device_settings: {
     title: "Settings are not valid",
     message: "Check the sizes, default size and strength values.",
+  },
+  invalid_measurement: {
+    title: "Measurement is not valid",
+    message: "Enter a positive amount, for example 92,5 ml.",
+  },
+  calibration_not_ready: {
+    title: "Calibration is not ready",
+    message: "Run the pump test to the end before saving the measurement.",
+  },
+  calibration_save_failed: {
+    title: "Calibration was not saved",
+    message: "The measurement is still on screen. Retry or discard it to unlock the machine.",
+  },
+  calibration_start_failed: {
+    title: "Calibration did not start",
+    message: "Stop the current operation and try this pump again.",
+  },
+  pump_not_found: {
+    title: "Pump not found",
+    message: "This pump no longer exists. Refresh the page and choose another pump.",
+  },
+  connection_lost: {
+    title: "Neat is offline",
+    message: "The screen cannot reach the machine. Check its power and connection.",
   },
 };
 

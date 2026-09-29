@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { LockKeyhole, Wifi } from "lucide-react";
+import { CheckCircle2, LockKeyhole, Radio, Wifi } from "lucide-react";
 import { toast } from "sonner";
 import { Modal } from "../components/Modal";
 import {
@@ -16,6 +16,7 @@ import {
   getNetwork,
   reconnectNetwork,
   scanNetworks,
+  testInternetConnection,
 } from "../services/api";
 import { showApiError } from "../services/notifications";
 export function NetworkSettingsPage() {
@@ -71,6 +72,20 @@ export function NetworkSettingsPage() {
     },
     onError: showApiError,
   });
+  const internet = useMutation({
+    mutationFn: testInternetConnection,
+    onError: showApiError,
+  });
+  const [internetStage, setInternetStage] = useState(0);
+  useEffect(() => {
+    if (!internet.isPending) return;
+    const startedAt = window.setTimeout(() => setInternetStage(1), 350);
+    const securedAt = window.setTimeout(() => setInternetStage(2), 950);
+    return () => {
+      window.clearTimeout(startedAt);
+      window.clearTimeout(securedAt);
+    };
+  }, [internet.isPending]);
   return (
     <div className="settings-page">
       <PageHeading title="Network" subtitle="Connect Neat to your Wi-Fi." />
@@ -125,6 +140,36 @@ export function NetworkSettingsPage() {
               title="Access point password"
               value={query.data.accessPointPassword || "—"}
             />
+          </SettingsGroup>
+          <h2 className="settings-section-label">Internet</h2>
+          <SettingsGroup>
+            <button
+              className="settings-row internet-test-row"
+              disabled={internet.isPending}
+              onClick={() => {
+                setInternetStage(0);
+                internet.mutate();
+              }}
+              type="button"
+            >
+              <Radio className={internet.isPending ? "internet-testing" : "settings-row__icon"} size={20} />
+              <span className="settings-row__copy">
+                <strong>Test internet connection</strong>
+                <small>{internet.isPending
+                  ? ["Checking Wi-Fi and DNS…", "Opening a secure connection…", "Waiting for the Neat Cloud…"][internetStage]
+                  : internet.data?.reachable
+                    ? `Neat Cloud reached in ${internet.data.latencyMs} ms.`
+                    : internet.data?.dnsResolved
+                      ? "DNS works, but the Neat Cloud did not answer."
+                      : internet.data?.connected
+                        ? "Wi-Fi is connected, but DNS is unavailable."
+                        : internet.data
+                          ? "Connect Neat to Wi-Fi first."
+                          : "Check Wi-Fi, DNS and the Neat Cloud."}</small>
+                {internet.isPending && <span className="internet-test-progress" aria-hidden="true"><i /></span>}
+              </span>
+              {internet.data?.reachable && <CheckCircle2 className="success-text" />}
+            </button>
           </SettingsGroup>
           <div className="section-heading">
             <div>

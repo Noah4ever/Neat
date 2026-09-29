@@ -30,7 +30,7 @@ export function DrinkSessionProvider({ children }: { children: ReactNode }) {
   const { data: status } = useQuery({
     queryKey: ["status"],
     queryFn: getStatus,
-    refetchInterval: 1000,
+    refetchInterval: 250,
   });
 
   useEffect(

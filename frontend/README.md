@@ -48,3 +48,15 @@ Radix provides accessible dialogs and progress semantics. Touch controls are at 
 ## Build and flash assets
 
 Run `npm run build` before `idf.py build`. The existing IDF build packages `frontend/dist` into `build/web.bin`; it does not run Vite itself. The editable PNG originals are not packaged. No ESP firmware, repository or partition changes are required by this frontend update.
+
+## Public events and cloud queue
+
+This project now contains only the machine UI served by the ESP. The public
+website and its API live in [`../cloud`](../cloud), with their own packages,
+builds and deployment. Product photography and USDZ models therefore never
+enter `web.bin`.
+
+Normal setup does not require Developer settings. An organizer creates a
+six-digit pairing code on the public event dashboard; on the machine they open
+**Guest queue → Connect event** and enter it. Developer settings retain the
+base URL fields only for changing environments during development.

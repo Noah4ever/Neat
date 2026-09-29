@@ -15,7 +15,9 @@ idf_component_register(
     PRIV_REQUIRES
       espressif__cjson
       esp_app_format
+      esp_http_client
       esp_netif
+      mbedtls
       spiffs
 )
 

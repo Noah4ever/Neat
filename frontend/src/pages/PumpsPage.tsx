@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronRight,
@@ -30,6 +31,7 @@ import type { BottleState, PumpConfig } from "../types/device";
 type PumpArea = "bottles" | "cleaning" | "calibration";
 
 export function PumpsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const pumps = useQuery({ queryKey: ["pumps"], queryFn: getPumps });
   const ingredients = useQuery({
     queryKey: ["ingredients"],
@@ -38,7 +40,7 @@ export function PumpsPage() {
   const bottles = useQuery({ queryKey: ["bottles"], queryFn: getBottles });
   const cache = useQueryClient();
   const { status, busy, stopping, stop } = useDrinkSession();
-  const [area, setArea] = useState<PumpArea>("bottles");
+  const [area, setArea] = useState<PumpArea>(() => searchParams.get("area") === "calibration" ? "calibration" : "bottles");
   const [assigning, setAssigning] = useState<PumpConfig | null>(null);
   const [ingredientSearch, setIngredientSearch] = useState("");
   const ingredientChoices = [...(ingredients.data ?? [])]
@@ -52,9 +54,10 @@ export function PumpsPage() {
     );
   const [editingBottle, setEditingBottle] = useState<BottleState | null>(null);
   const [cleaningPump, setCleaningPump] = useState("all");
-  const [calibrationPump, setCalibrationPump] = useState("");
+  const [calibrationPump, setCalibrationPump] = useState(() => searchParams.get("pump") ?? "");
   const [duration, setDuration] = useState(30);
   const [volume, setVolume] = useState("");
+  const requestedIngredientId = Number(searchParams.get("assignIngredient")) || null;
 
   const refreshPumps = () => {
     void cache.invalidateQueries({ queryKey: ["pumps"] });
@@ -99,8 +102,9 @@ export function PumpsPage() {
     onSuccess: () => cache.invalidateQueries({ queryKey: ["status"] }),
     onError: showApiError,
   });
+  const measuredVolume = Number(volume.trim().replace(",", "."));
   const finish = useMutation({
-    mutationFn: () => finishCalibration(Number(volume)),
+    mutationFn: () => finishCalibration(measuredVolume),
     onSuccess: () => {
       void cache.invalidateQueries({ queryKey: ["status"] });
       refreshPumps();
@@ -377,18 +381,19 @@ export function PumpsPage() {
                 finish.mutate();
               }}
             >
+              <div className="calibration-complete"><strong>Calibration run complete · 100%</strong><ProgressMeter value={100} label="Calibration complete" /></div>
               <label>
                 Collected liquid · ml
                 <input
                   autoFocus
-                  type="number"
-                  min={0.1}
-                  max={10000}
-                  step="any"
+                  type="text"
+                  inputMode="decimal"
+                  pattern="[0-9]+([,.][0-9]+)?"
                   required
                   value={volume}
-                  onChange={(event) => setVolume(event.target.value)}
+                  onChange={(event) => { const next = event.target.value; if (/^\d{0,5}([,.]\d{0,3})?$/.test(next)) setVolume(next); }}
                 />
+                <small>Comma and decimal point are both accepted.</small>
               </label>
               <div className="button-row">
                 <button
@@ -401,7 +406,7 @@ export function PumpsPage() {
                 </button>
                 <button
                   className="primary-button"
-                  disabled={finish.isPending || !(Number(volume) > 0)}
+                  disabled={finish.isPending || !Number.isFinite(measuredVolume) || measuredVolume <= 0}
                 >
                   Save calibration
                 </button>
@@ -411,6 +416,14 @@ export function PumpsPage() {
         </section>
       )}
 
+      <Modal
+        open={requestedIngredientId !== null}
+        onOpenChange={(open) => { if (!open && !assignment.isPending) setSearchParams({ area: "bottles" }); }}
+        title={`Choose a pump for ${ingredients.data?.find((item) => item.id === requestedIngredientId)?.name ?? "ingredient"}`}
+        description="Choose the physical pump this ingredient is connected to."
+      >
+        <div className="pump-choice-list">{pumps.data?.map((pump) => <button disabled={assignment.isPending} key={pump.id} onClick={() => { assignment.mutate({ pumpId: pump.id, ingredientId: requestedIngredientId }); setSearchParams({ area: "bottles" }); }} type="button"><strong>Pump {pump.id}</strong><small>{pump.ingredientId ? ingredients.data?.find((item) => item.id === pump.ingredientId)?.name ?? `Ingredient ${pump.ingredientId}` : "Available"}</small></button>)}</div>
+      </Modal>
       <Modal
         open={!!assigning}
         onOpenChange={(open) => {

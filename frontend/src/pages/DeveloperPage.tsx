@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
@@ -13,10 +13,13 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Modal } from "../components/Modal";
+import { CloudIntegrationCard } from "../components/CloudIntegrationCard";
 import { PageHeading } from "../components/SettingsPrimitives";
 import { QueryMessage } from "../components/QueryMessage";
 import {
   getDeveloperStatus,
+  getDeviceSettings,
+  setMockApiEnabled,
   deletePump,
   resetDeveloperLeds,
   savePump,
@@ -26,6 +29,8 @@ import {
   stopDeveloperPump,
   testDeveloperBuzzer,
   testDeveloperPump,
+  updateDeviceSettings,
+  USE_MOCK_API,
 } from "../services/api";
 import { ApiError } from "../services/errors";
 import {
@@ -35,7 +40,52 @@ import {
 } from "../services/notifications";
 import { createMachineWebSocket } from "../services/websocket";
 import { useDeveloperMode } from "../state/developerModeContext";
-import type { PumpConfig } from "../types/device";
+import type { BuzzerTone, PumpConfig } from "../types/device";
+
+function BuzzerComposer() {
+  const cache = useQueryClient();
+  const settings = useQuery({ queryKey: ["device-settings"], queryFn: getDeviceSettings });
+  const [kind, setKind] = useState<"success" | "error">("success");
+  const [draft, setDraft] = useState<BuzzerTone[] | null>(null);
+  const tones = draft ?? (kind === "success" ? settings.data?.successSound : settings.data?.errorSound) ?? [];
+  const save = useMutation({
+    mutationFn: async () => {
+      if (!settings.data) return;
+      await updateDeviceSettings({ ...settings.data, [kind === "success" ? "successSound" : "errorSound"]: tones });
+    },
+    onSuccess: async () => { setDraft(null); await cache.invalidateQueries({ queryKey: ["device-settings"] }); toast.success("Buzzer sound saved to Neat"); },
+    onError: showApiError,
+  });
+  const update = (index: number, patch: Partial<BuzzerTone>) => setDraft(tones.map((tone, valueIndex) => valueIndex === index ? { ...tone, ...patch } : tone));
+  return <section className="settings-card buzzer-composer"><div className="section-heading"><div><h2>Buzzer composer</h2><p className="muted">Shape the tones Neat plays and save them on the machine.</p></div><BellRing /></div><div className="buzzer-kind"><button className={kind === "success" ? "active" : ""} onClick={() => { setKind("success"); setDraft(null); }} type="button">Success</button><button className={kind === "error" ? "active" : ""} onClick={() => { setKind("error"); setDraft(null); }} type="button">Error</button></div><div className="tone-timeline" aria-label="Tone timeline">{tones.map((tone, index) => <div className="tone-block" key={index} style={{ height: `${34 + tone.frequencyHz / 70}px`, flexGrow: tone.durationMs }}><span>{tone.frequencyHz} Hz</span><small>{tone.durationMs} ms</small></div>)}</div><div className="tone-controls">{tones.map((tone, index) => <article key={index}><strong>Tone {index + 1}</strong><label>Pitch<input min="100" max="3000" step="10" type="range" value={tone.frequencyHz} onChange={(event) => update(index, { frequencyHz: Number(event.target.value) })} /></label><label>Duration<input inputMode="numeric" min="20" max="2000" type="number" value={tone.durationMs} onChange={(event) => update(index, { durationMs: Math.max(20, Number(event.target.value)) })} /></label><button disabled={tones.length === 1} onClick={() => setDraft(tones.filter((_, valueIndex) => valueIndex !== index))} type="button">Remove</button></article>)}</div><div className="button-row"><button className="secondary-button" disabled={tones.length >= 12} onClick={() => setDraft([...tones, { frequencyHz: 1000, durationMs: 120 }])} type="button"><Plus size={18} /> Add tone</button><button className="secondary-button" onClick={() => testDeveloperBuzzer(kind)} type="button">Preview saved sound</button><button className="primary-button" disabled={!draft || save.isPending} onClick={() => save.mutate()} type="button">{save.isPending ? "Saving…" : "Save sound"}</button></div></section>;
+}
+
+function ApiModeCard() {
+  return (
+    <section className="settings-card developer-api-mode">
+      <div className="settings-row">
+        <span className="settings-row__copy">
+          <strong>Mock API</strong>
+          <small>
+            {USE_MOCK_API
+              ? "Simulated data is active. Hardware outputs are not used."
+              : "Real ESP REST and WebSocket connections are active."}
+          </small>
+        </span>
+        <button
+          type="button"
+          className="toggle-control"
+          role="switch"
+          aria-label="Mock API"
+          aria-checked={USE_MOCK_API}
+          onClick={() => setMockApiEnabled(!USE_MOCK_API)}
+        >
+          <span />
+        </button>
+      </div>
+    </section>
+  );
+}
 
 export function DeveloperPage() {
   const { disable } = useDeveloperMode();
@@ -45,6 +95,8 @@ export function DeveloperPage() {
   const [editingPump, setEditingPump] = useState<PumpConfig | null>(null);
   const [newPump, setNewPump] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [testingAll, setTestingAll] = useState(false);
+  const cancelPumpSequence = useRef(false);
   const status = useQuery({
     queryKey: ["developer-status"],
     queryFn: getDeveloperStatus,
@@ -83,10 +135,27 @@ export function DeveloperPage() {
       ),
     [],
   );
+  async function testAllPumps() {
+    if (!status.data || testingAll) return;
+    cancelPumpSequence.current = false;
+    setTestingAll(true);
+    try {
+      for (const pump of status.data.pumps) {
+        if (cancelPumpSequence.current) break;
+        await testDeveloperPump(pump.id, 500);
+        await new Promise((resolve) => window.setTimeout(resolve, 600));
+      }
+    } catch (error) {
+      showApiError(error);
+      await stopAllDeveloperPumps().catch(() => undefined);
+    } finally {
+      setTestingAll(false);
+      void cache.invalidateQueries({ queryKey: ["developer-status"] });
+    }
+  }
   useEffect(
     () => () => {
-      void resetDeveloperLeds();
-      void stopDeveloperBuzzer();
+      void Promise.allSettled([resetDeveloperLeds(), stopDeveloperBuzzer()]);
     },
     [],
   );
@@ -94,6 +163,8 @@ export function DeveloperPage() {
     return (
       <div className="settings-page">
         <PageHeading title="Developer" subtitle="Hardware diagnostics." />
+        <ApiModeCard />
+        <CloudIntegrationCard />
         <QueryMessage query={status} />
       </div>
     );
@@ -107,7 +178,7 @@ export function DeveloperPage() {
           <button
             className="secondary-button"
             onClick={() => {
-              void resetDeveloperLeds();
+              void resetDeveloperLeds().catch(() => undefined);
               disable();
               toast.success("Developer settings hidden");
             }}
@@ -116,6 +187,8 @@ export function DeveloperPage() {
           </button>
         }
       />
+      <ApiModeCard />
+      <CloudIntegrationCard />
       <div className="developer-status-grid">
         <article data-active={data.glassPresent}>
           <GlassWater />
@@ -141,6 +214,7 @@ export function DeveloperPage() {
           </span>
         </article>
       </div>
+      <BuzzerComposer />
       <section className="settings-card">
         <div className="section-heading">
           <div>
@@ -201,12 +275,10 @@ export function DeveloperPage() {
               five seconds.
             </p>
           </div>
-          <button
-            className="stop-button"
-            onClick={() => action.mutate(stopAllDeveloperPumps)}
-          >
-            <CircleStop size={18} /> Stop all
-          </button>
+          <div className="button-row">
+            <button className="secondary-button" disabled={testingAll || data.machine.busy} onClick={() => void testAllPumps()} type="button"><TestTube2 size={18} /> {testingAll ? "Testing…" : "Test all"}</button>
+            <button className="stop-button" onClick={() => { cancelPumpSequence.current = true; action.mutate(stopAllDeveloperPumps); }} type="button"><CircleStop size={18} /> Stop all</button>
+          </div>
         </div>
         <div className="developer-pump-list">
           {data.pumps.map((pump) => (

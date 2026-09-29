@@ -10,6 +10,7 @@
 #include "io/Buzzer.hpp"
 #include "io/LED.hpp"
 #include "io/OutputChannel.hpp"
+#include "settings/DeviceSettings.hpp"
 
 struct PumpLedMapping {
   std::uint8_t pumpId;
@@ -30,33 +31,22 @@ public:
 
   void playSuccess();
   void playError();
+  void setSounds(const std::vector<BuzzerTone> &success,
+                 const std::vector<BuzzerTone> &error);
 
   void stopSound();
 
 private:
-  struct Tone {
-    std::uint16_t frequencyHz;
-    std::uint16_t durationMs;
-  };
-
-  static constexpr std::array<Tone, 2> SUCCESS_MELODY = {{
-      {900, 100},
-      {1400, 180},
-  }};
-
-  static constexpr std::array<Tone, 2> ERROR_MELODY = {{
-      {500, 180},
-      {300, 300},
-  }};
-
   std::vector<PumpLedMapping> pumpLedMappings_;
   Buzzer buzzer_;
   bool testLedOverrideActive_ = false;
 
-  const Tone *currentMelody_ = nullptr;
+  std::vector<BuzzerTone> successMelody_ = {{880, 90}, {1319, 140}};
+  std::vector<BuzzerTone> errorMelody_ = {{440, 130}, {330, 210}};
+  const BuzzerTone *currentMelody_ = nullptr;
   std::size_t currentMelodySize_ = 0;
   std::size_t currentToneIndex_ = 0;
 
-  void startMelody(const Tone *melody, std::size_t size);
+  void startMelody(const BuzzerTone *melody, std::size_t size);
   void startCurrentTone();
 };

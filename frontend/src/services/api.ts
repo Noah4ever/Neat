@@ -13,11 +13,30 @@ import type {
   RecipeRecord,
   SystemStatus,
 } from "../types/device";
+import { createId } from "./id";
 import { ApiError } from "./errors";
 import { emitMockMachineEvent } from "./mockEvents";
 import { mockMediaUsedBytes, removeMockMedia, setMockMedia } from "./mockMedia";
 
-export const USE_MOCK_API = import.meta.env.VITE_USE_MOCK_API === "true";
+const MOCK_API_STORAGE_KEY = "neat.useMockApi";
+
+function storedMockApiPreference() {
+  try {
+    const stored = localStorage.getItem(MOCK_API_STORAGE_KEY);
+    if (stored === "true") return true;
+    if (stored === "false") return false;
+  } catch {
+    // Fall back to the build default when browser storage is unavailable.
+  }
+  return import.meta.env.VITE_USE_MOCK_API === "true";
+}
+
+export const USE_MOCK_API = storedMockApiPreference();
+
+export function setMockApiEnabled(enabled: boolean) {
+  localStorage.setItem(MOCK_API_STORAGE_KEY, String(enabled));
+  window.location.reload();
+}
 type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
 type MockScenario =
   | "no_glass"
@@ -51,6 +70,8 @@ let mockDeviceSettings: DeviceSettings = {
   defaultDrinkSizeMl: 400,
   alcoholStrengthLessFactor: 0.75,
   alcoholStrengthMoreFactor: 1.25,
+  successSound: [{ frequencyHz: 880, durationMs: 90 }, { frequencyHz: 1319, durationMs: 140 }],
+  errorSound: [{ frequencyHz: 440, durationMs: 130 }, { frequencyHz: 330, durationMs: 210 }],
 };
 let mockOperation: OperationStatus = {
   state: "idle",
@@ -97,7 +118,7 @@ function ingredientCategory(id: number) {
 function calculateAvailability(recipe: RecipeRecord) {
   const missingIngredientIds: number[] = [];
   const uncalibratedIngredientIds: number[] = [];
-  for (const item of recipe.items.filter((value) => value.amountMl > 0)) {
+  for (const item of recipe.items.filter((value) => value.amountMl > 0 && value.machineDispensed !== false)) {
     const assigned = mockPumps.filter(
       (pump) => pump.ingredientId === item.ingredientId,
     );
@@ -279,6 +300,7 @@ function validateSettings(value: DeviceSettings) {
     value.alcoholStrengthLessFactor <= 0 ||
     value.alcoholStrengthLessFactor >= 1 ||
     value.alcoholStrengthMoreFactor <= 1
+    || !value.successSound?.length || !value.errorSound?.length
   )
     mockError(400, "invalid_device_settings");
   return { ...copy(value), drinkSizesMl: sorted };
@@ -333,7 +355,7 @@ function mockRequest<T>(path: string, method: HttpMethod, body?: unknown): T {
   if (path === "/api/status" && method === "GET")
     return copy(mockOperation) as T;
   if (path === "/api/device" && method === "GET")
-    return { name: "Neat", model: "ESP32-C6", version: "1.0.0" } as T;
+    return { id: "neat-mock", name: "Neat", model: "ESP32-C6", version: "1.0.0" } as T;
   if (path === "/api/device/restart" && method === "POST")
     return { status: "restarting" } as T;
   if (path === "/api/system/status" && method === "GET")
@@ -589,6 +611,15 @@ function mockRequest<T>(path: string, method: HttpMethod, body?: unknown): T {
   }
   if (path === "/api/network/status" && method === "GET")
     return copy(mockNetwork) as T;
+  if (path === "/api/network/internet" && method === "GET")
+    return {
+      connected: mockNetwork.connected,
+      dnsResolved: mockNetwork.connected,
+      cloudReachable: mockNetwork.connected,
+      reachable: mockNetwork.connected,
+      statusCode: mockNetwork.connected ? 200 : 0,
+      latencyMs: mockNetwork.connected ? 84 : 0,
+    } as T;
   if (path === "/api/network/scan" && method === "POST") {
     mockNetwork.networks = [
       { ssid: "HomeWiFi", secured: true, rssi: -38 },
@@ -681,6 +712,11 @@ async function realRequest<T>(
   method: HttpMethod,
   body?: unknown,
 ) {
+  const timeoutMs = path === "/api/health"
+    ? 2500
+    : path === "/api/network/internet" || path.startsWith("/api/cloud/")
+      ? 25000
+      : 15000;
   const response = await fetch(path, {
     method,
     headers: {
@@ -688,7 +724,7 @@ async function realRequest<T>(
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    signal: AbortSignal.timeout(path === "/api/health" ? 2500 : 15000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const text = await response.text();
   let payload: unknown;
@@ -757,9 +793,10 @@ export async function saveRecipe(recipe: Cocktail, isNew: boolean) {
       description: recipe.description || null,
       baseSizeMl: recipe.baseSizeMl,
       preparationSteps: recipe.preparationSteps,
-      items: recipe.ingredients.map(({ ingredientId, amountMl }) => ({
+      items: recipe.ingredients.map(({ ingredientId, amountMl, machineDispensed }) => ({
         ingredientId,
         amountMl,
+        machineDispensed: machineDispensed !== false,
       })),
     },
   );
@@ -771,11 +808,48 @@ export async function getIngredients() {
   return request<Ingredient[]>("/api/ingredients");
 }
 export async function saveIngredient(value: Ingredient, isNew: boolean) {
-  await request(
+  return request<Ingredient | void>(
     isNew ? "/api/ingredients" : `/api/ingredients/${value.id}`,
     isNew ? "POST" : "PUT",
     { name: value.name, category: value.category },
   );
+}
+export async function installBuiltInRecipe(templateId: number) {
+  const template = mockRecipeSeed.find((item) => item.id === templateId);
+  if (!template) throw new ApiError(404, "recipe_not_found");
+  const existingRecipes = await getRecipes();
+  if (existingRecipes.some((recipe) => recipe.name.trim().toLocaleLowerCase() === template.name.trim().toLocaleLowerCase())) return;
+  const ingredients = await getIngredients();
+  const resolved = new Map<number, Ingredient>();
+  for (const item of template.items) {
+    const seed = mockIngredientSeed.find((value) => value.id === item.ingredientId);
+    if (!seed) continue;
+    let ingredient = ingredients.find((value) => value.name.trim().toLocaleLowerCase() === seed.name.trim().toLocaleLowerCase());
+    if (!ingredient) {
+      const created = await saveIngredient({ ...seed, id: 0 }, true);
+      if (!created) throw new ApiError(500, "ingredient_not_created");
+      ingredient = created;
+      ingredients.push(created);
+    }
+    resolved.set(item.ingredientId, ingredient);
+  }
+  const cocktail: Cocktail = {
+    id: 0,
+    name: template.name,
+    imageKey: template.imageKey,
+    subtitle: template.subtitle ?? "",
+    description: template.description ?? "",
+    baseSizeMl: template.baseSizeMl,
+    preparationSteps: template.preparationSteps,
+    availability: template.availability,
+    strengthAdjustmentAvailable: template.strengthAdjustmentAvailable,
+    ingredients: template.items.map((item) => {
+      const ingredient = resolved.get(item.ingredientId)!;
+      const manual = ["Soda Water", "Cola", "Tonic Water", "Ginger Beer"].includes(ingredient.name);
+      return { ...ingredient, id: ingredient.id, ingredientId: ingredient.id, amountMl: item.amountMl, machineDispensed: !manual, amount: `${item.amountMl} ml` };
+    }),
+  };
+  await saveRecipe(cocktail, true);
 }
 export async function deleteIngredient(id: number) {
   await request(`/api/ingredients/${id}`, "DELETE");
@@ -836,6 +910,62 @@ export async function finishCalibration(measuredMl: number) {
 }
 export async function getNetwork() {
   return request<NetworkInfo>("/api/network/status");
+}
+export async function testInternetConnection() {
+  return request<{
+    connected: boolean;
+    dnsResolved: boolean;
+    cloudReachable: boolean;
+    reachable: boolean;
+    statusCode: number;
+    latencyMs: number;
+  }>("/api/network/internet");
+}
+
+export async function pairCloudThroughDevice(value: {
+  code: string;
+  baseUrl: string;
+}) {
+  console.log("value: ", value)
+  return request<{ machineId: string }>("/api/cloud/pair", "POST", value);
+}
+
+export async function heartbeatCloudThroughDevice(value: {
+  recipeIds: string[];
+  baseUrl: string;
+}) {
+  return request<{ ok: boolean; paired: boolean; publicQueueUrl: string }>(
+    "/api/cloud/heartbeat", "POST", value,
+  );
+}
+
+export async function syncCloudThroughDevice(value: {
+  recipeIds: string[];
+  baseUrl: string;
+}) {
+  return request<{
+    recipes: { id: string; machineRecipeId: number }[];
+    requestedRecipeIds: string[];
+  }>("/api/cloud/sync", "POST", value);
+}
+
+export async function getCloudQueueThroughDevice(value: {
+  machineId: string;
+  baseUrl: string;
+}) {
+  return request<import("../types/cloud").CloudQueueEntry[]>(
+    "/api/cloud/queue", "POST", value,
+  );
+}
+
+export async function claimCloudQueueThroughDevice(value: {
+  machineId: string;
+  entryId: string;
+  baseUrl: string;
+}) {
+  return request<import("../types/cloud").CloudQueueEntry>(
+    "/api/cloud/queue/claim", "POST", value,
+  );
 }
 export async function scanNetworks() {
   await request("/api/network/scan", "POST");
@@ -913,7 +1043,7 @@ export async function stopDeveloperBuzzer() {
 export async function uploadImage(blob: Blob) {
   if (USE_MOCK_API) {
     if (blob.size > 512 * 1024) mockError(413, "image_too_large");
-    const id = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+    const id = createId().replaceAll("-", "").slice(0, 16);
     setMockMedia(id, blob);
     return { imageKey: `media:${id}` };
   }

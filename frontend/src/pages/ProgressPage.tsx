@@ -33,9 +33,9 @@ function ProgressPercentage({
     const startedAt = performance.now();
     let frame: number;
     const animate = (now: number) => {
-      const fraction = Math.min(1, (now - startedAt) / 1000);
+      const fraction = Math.min(1, (now - startedAt) / 300);
       current.current = from + (value - from) * fraction;
-      setPercentage(Math.floor(current.current));
+      setPercentage(Math.round(current.current));
       if (fraction < 1) frame = requestAnimationFrame(animate);
     };
     frame = requestAnimationFrame(animate);
@@ -83,6 +83,7 @@ export function ProgressPage() {
             <h1>Your {session.cocktail.name} is ready.</h1>
             <PageInfoButton />
           </div>
+          <div className="completion-progress"><span>Complete</span><strong>100%</strong><ProgressMeter value={100} label="Drink preparation complete" /></div>
           {after.length > 0 && (
             <>
               <h2>One last touch</h2>

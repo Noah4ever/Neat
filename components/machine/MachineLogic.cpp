@@ -30,7 +30,9 @@ MachineLogic::MachineLogic(PumpControl &pumpControl,
       currentCalibrationPumpId_(0),
       currentCalibrationDurationMs_(0) {}
 
-void MachineLogic::init() {}
+void MachineLogic::init() {
+  feedbackControl_.setSounds(deviceSettings_.successSound, deviceSettings_.errorSound);
+}
 
 void MachineLogic::update() {
   pumpControl_.update();
@@ -192,6 +194,7 @@ bool MachineLogic::updateDeviceSettings(const DeviceSettings &settings) {
     return false;
   }
   deviceSettings_ = settings;
+  feedbackControl_.setSounds(settings.successSound, settings.errorSound);
   synchronizePumpLeds();
   return true;
 }
@@ -262,6 +265,7 @@ MachineLogic::startRecipe(std::uint16_t recipeId,
   dispensingPlan.reserve(effectiveItems.size());
 
   for (const RecipeItem &item : effectiveItems) {
+    if (!item.machineDispensed) continue;
     if (item.amountMl == 0) {
       continue;
     }
@@ -437,18 +441,18 @@ MachineLogic::startCalibrationPump(std::uint8_t pumpId,
 }
 
 MachineActionResult
-MachineLogic::finishedCalibrationPump(std::uint64_t measuredMl) {
+MachineLogic::finishedCalibrationPump(float measuredMl) {
   refreshOperationState();
   if (operationKind_ != MachineOperationKind::CALIBRATION ||
       operationState_ != MachineOperationState::FINISHED ||
       currentCalibrationDurationMs_ == 0) {
     return MachineActionResult::OPERATION_NOT_READY;
   }
-  if (measuredMl == 0) {
+  if (!std::isfinite(measuredMl) || measuredMl <= 0.0f) {
     return MachineActionResult::INVALID_AMOUNT;
   }
 
-  const float mlPerSec = (static_cast<float>(measuredMl) * 1000.0f) /
+  const float mlPerSec = (measuredMl * 1000.0f) /
                          static_cast<float>(currentCalibrationDurationMs_);
   std::optional<PumpConfig> pump =
       pumpRepository_.findById(currentCalibrationPumpId_);

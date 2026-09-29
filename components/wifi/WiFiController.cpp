@@ -4,8 +4,10 @@
 #include <utility>
 
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
+#include "lwip/netdb.h"
 
 WiFiController::WiFiController(std::string apSsid, std::string apPassword)
     : apSsid_(std::move(apSsid)), apPassword_(std::move(apPassword)) {}
@@ -43,6 +45,16 @@ esp_err_t WiFiController::init() {
 
   esp_netif_create_default_wifi_ap();
   esp_netif_create_default_wifi_sta();
+
+  // HTTPS certificate validation needs a valid system clock. SNTP starts as
+  // soon as the station receives internet access and keeps the clock current.
+  esp_sntp_config_t sntpConfig =
+      ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+  result = esp_netif_sntp_init(&sntpConfig);
+
+  if (result != ESP_OK) {
+    return result;
+  }
 
   wifi_init_config_t wifiConfig = WIFI_INIT_CONFIG_DEFAULT();
 
@@ -167,6 +179,21 @@ bool WiFiController::isStationConnected() const {
   return stationConnected_.load();
 }
 
+bool WiFiController::testInternetAccess() const {
+  if (!stationConnected_.load()) {
+    return false;
+  }
+  addrinfo hints = {};
+  hints.ai_family = AF_INET;
+  addrinfo *result = nullptr;
+  const int status = getaddrinfo("api.neat.apps.thiering.org", nullptr,
+                                 &hints, &result);
+  if (result) {
+    freeaddrinfo(result);
+  }
+  return status == 0;
+}
+
 std::string WiFiController::getStationSsid() const {
   wifi_config_t config = {};
   if (esp_wifi_get_config(WIFI_IF_STA, &config) != ESP_OK) {
@@ -286,8 +313,9 @@ void WiFiController::handleEvent(esp_event_base_t eventBase, int32_t eventId,
 
     if (eventId == WIFI_EVENT_STA_DISCONNECTED) {
       stationConnected_ = false;
-
-      connectSavedNetwork();
+      if (reconnectEnabled_) {
+        connectSavedNetwork();
+      }
     }
 
     if (eventId == WIFI_EVENT_SCAN_DONE) {
